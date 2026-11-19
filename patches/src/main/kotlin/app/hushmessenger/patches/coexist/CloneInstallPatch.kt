@@ -110,6 +110,18 @@ internal fun cloneName(value: String, newPackage: String): String? = when {
     else -> null
 }
 
+/** The names Install beside Meta apps leaves the two shared permissions under, renamed from Meta's own. */
+internal val SHARED_PERMISSION_NAMES = sharedNames.map(::renamed).toSet()
+
+/**
+ * A shared permission moved under the clone's own package, where the clone is the only app that can own it.
+ * The shared names are only shared while every patched app is signed with one key; a clone signed with any
+ * other key — Manager against Desktop, a CI build against either — can't redeclare them at all, and Android
+ * refuses the install with INSTALL_FAILED_DUPLICATE_PERMISSION. Null for anything that isn't one of the two.
+ */
+internal fun cloneSharedName(name: String, newPackage: String): String? =
+    if (name in SHARED_PERMISSION_NAMES) "$newPackage." + name.removePrefix(SHARED_PREFIX) else null
+
 private fun Document.all(tag: String) = getElementsByTagName(tag).let { nodes -> (0 until nodes.length).map { nodes.item(it) as Element } }
 
 private fun Element.children(tag: String) = (0 until childNodes.length)
@@ -144,11 +156,16 @@ internal fun Document.renameForClone(newPackage: String, label: String): CloneMa
     if (manifest.tagName != "manifest" || manifest.getAttribute("package") != ORIGINAL) fail("the manifest isn't Messenger's")
     val application = all("application").singleOrNull() ?: fail("expected one application")
 
-    // Messenger's own permissions move. The two every patched Meta app shares must already carry the shared names,
-    // which two apps signed with the same key can both declare.
+    // Messenger's own permissions move under the clone's package, and the two every patched Meta app shares
+    // move with them, under the same package: their shared names are only shared while every patched app
+    // carries one signing key, and a clone signed with any other key can't redeclare them at all. Nothing is
+    // dropped and no protection level is touched — every declaration, request and component guard is renamed
+    // together by the attribute pass below.
     val declared = all("permission").map { it.getAttribute("android:name") }
-    val permissions = declared.mapNotNull { name -> cloneName(name, newPackage)?.let { name to it } }.toMap()
-    val stuck = declared.filter { it !in permissions && !it.startsWith(SHARED_PREFIX) }
+    val permissions = declared.mapNotNull { name ->
+        (cloneName(name, newPackage) ?: cloneSharedName(name, newPackage))?.let { name to it }
+    }.toMap()
+    val stuck = declared.filter { it !in permissions }
     if (stuck.isNotEmpty()) fail("Messenger declares ${stuck.joinToString()} under a name another app can own")
     if (permissions.isEmpty()) fail("Messenger declares no permissions of its own")
 
@@ -541,6 +558,52 @@ private fun cloneSiteEdits(
     }
 }
 
+/** A shared permission's name, when [this] loads one. */
+private fun Instruction.sharedPermissionString(): String? {
+    if (opcode != Opcode.CONST_STRING && opcode != Opcode.CONST_STRING_JUMBO) return null
+    val string = ((this as? ReferenceInstruction)?.reference as? StringReference)?.string
+    return string?.takeIf { it in SHARED_PERMISSION_NAMES }
+}
+
+/**
+ * Every load of a shared permission name in Messenger's own code, by method and instruction index, with the name
+ * it loads. Install beside Meta apps renamed these loads from Meta's names; the clone renames them on, so the
+ * code asks for the permissions the clone's manifest declares. The extension never names them, as before.
+ */
+internal fun findSharedPermissionSites(classes: Iterable<ClassDef>): Map<String, String> =
+    classes.filterNot { it.isExtension() }.flatMap { it.methods }.flatMap { method ->
+        val code = method.implementation?.instructions?.toList() ?: return@flatMap emptyList()
+        code.indices.mapNotNull { index ->
+            code[index].sharedPermissionString()?.let { "${method.hookId()}@$index" to it }
+        }
+    }.toMap()
+
+/** The shared permission loads the tested build must carry, under the names Install beside Meta apps left them. */
+internal fun expectedSharedPermissionSites(versionCode: String): Map<String, String> =
+    expectedDexSitesFor(versionCode).mapValues { renamed(it.value) }
+
+/**
+ * Checks every shared permission load in [sites], then hands back the edits that move each name under the
+ * clone's package, so a caller can check its own sites before the first change.
+ */
+internal fun sharedPermissionEdits(sites: List<Pair<MutableMethod, Int>>, newPackage: String): () -> Unit {
+    if (!isClonePackage(newPackage)) fail("$newPackage can't be used as a package name")
+    if (sites.map { (method, at) -> method.hookId() to at }.toSet().size != sites.size) {
+        fail("a shared permission site is listed twice")
+    }
+    val loads = sites.map { (method, at) ->
+        val current = method.implementation?.instructions?.elementAtOrNull(at)?.sharedPermissionString()
+            ?: fail("${method.hookId()}@$at no longer loads a shared permission")
+        Triple(method, at, cloneSharedName(current, newPackage)!!)
+    }
+    return {
+        // Last first, as a longer instruction can move the ones after it in the same method.
+        for ((method, at, name) in loads.sortedByDescending { it.second }) {
+            method.replaceInstruction(at, "const-string/jumbo v${method.register(at, "a shared permission")}, \"$name\"")
+        }
+    }
+}
+
 /**
  * The clone sites, and the Facebook hand-offs when [facebook] isn't the regular app. Every site is checked before the
  * first edit, so a refused run doesn't leave the clone sites changed in a dex the patcher still writes. The hand-offs
@@ -607,7 +670,7 @@ internal fun Document.nameClone(path: String, label: String) {
 @Suppress("unused")
 val cloneInstallPatch = patch(
     name = CLONE_PATCH_NAME,
-    description = "Installs a second copy of Messenger beside the first, with its own app name. Push notifications may not reach the copy. Pick it in Morphe Manager's Expert mode. Works as soon as you patch it in, with no switch.",
+    description = "Installs a second copy of Messenger beside the first, with its own app name. Push notifications may not reach the copy, and the copy keeps to itself, so it can't share data with your other Meta apps. Pick it in Morphe Manager's Expert mode. Works as soon as you patch it in, with no switch.",
     default = false,
 ) {
     category("Fixes")
@@ -656,6 +719,17 @@ val cloneInstallPatch = patch(
             mutableClassDefBy(id.substringBefore("->")).methods.single { it.hookId() == id } to site.substringAfter('@').toInt()
         }
         if (dedup.isEmpty()) fail("Messenger no longer names its push dedup provider")
+        // The shared permissions take the clone's own names in the code that loads them by name, at the sites
+        // Install beside Meta apps pinned, under the names it left there. Checked and staged before any edit,
+        // applied after the clone sites: the two sets of methods are disjoint in every tested build.
+        val sharedExpected = expectedSharedPermissionSites(packageMetadata.versionCode)
+        if (findSharedPermissionSites(classes) != sharedExpected) {
+            fail("the shared permission loads differ from the tested build")
+        }
+        val sharedEdits = sharedPermissionEdits(sharedExpected.keys.map { site ->
+            val id = site.substringBefore('@')
+            mutableClassDefBy(id.substringBefore("->")).methods.single { it.hookId() == id } to site.substringAfter('@').toInt()
+        }, target)
         val facebook = facebookPackage?.takeIf(::isFacebookPackage) ?: fail("$facebookPackage can't be used as the Facebook app's name")
         applyCloneCode(methods.getValue(checks.single { it.endsWith("-><init>()V") }), methods.getValue(checks.single { it.endsWith(ATTACHMENT_CHECK) }),
             target, calls.map { methods.getValue(it.substringBefore('@')) to it.substringAfter('@').toInt() }, pools, dedup, facebook) {
@@ -664,6 +738,7 @@ val cloneInstallPatch = patch(
                 mutableClassDefBy(id.substringBefore("->")).methods.single { it.hookId() == id } to site.substringAfter('@').toInt()
             }
         }
+        sharedEdits()
         requestClone(target, label)
     }
 }

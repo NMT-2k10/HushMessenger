@@ -68,10 +68,12 @@ private val STOCK = """
       <permission android:name="com.facebook.orca.provider.ACCESS" android:protectionLevel="signature"/>
       <permission android:name="com.facebook.orca.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" android:protectionLevel="signature"/>
       <permission android:name="app.hushfacebook.permission.prod.FB_APP_COMMUNICATION" android:protectionLevel="signature"/>
+      <permission android:name="app.hushfacebook.receiver.permission.ACCESS" android:protectionLevel="signature"/>
       <uses-permission android:name="com.facebook.orca.provider.ACCESS"/>
       <uses-permission android:name="com.facebook.orca.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"/>
       <uses-permission android:name="com.facebook.katana.provider.ACCESS"/>
       <uses-permission android:name="app.hushfacebook.permission.prod.FB_APP_COMMUNICATION"/>
+      <uses-permission android:name="app.hushfacebook.receiver.permission.ACCESS"/>
       <queries><provider android:authorities="androidx.car.app.connection"/><package android:name="com.facebook.katana"/><package android:name="com.facebook.orca"/></queries>
       <application android:label="@string/app_name">
         <meta-data android:name="android.telephony.PROPERTY_SATELLITE_DATA_OPTIMIZED" android:value="com.facebook.orca"/>
@@ -97,6 +99,7 @@ private val STOCK = """
         <receiver android:name="stock.Notify" android:permission="app.hushfacebook.permission.prod.FB_APP_COMMUNICATION">
           <intent-filter><action android:name="com.facebook.orca.notify.ACTION_NEW_MESSAGE"/></intent-filter>
         </receiver>
+        <receiver android:name="com.facebook.device_id.UniqueIdSupplier" android:permission="app.hushfacebook.receiver.permission.ACCESS"/>
       </application>
     </manifest>
 """.trimIndent()
@@ -324,16 +327,48 @@ private fun MutableMethod.reads(index: Int): Pair<Int, String> = code()[index].l
     (it as OneRegisterInstruction).registerA to (it as ReferenceInstruction).reference.toString()
 }
 
+private const val SHARED_FORMAT = "app.hushfacebook.permission.%s.FB_APP_COMMUNICATION"
+private const val SHARED_APP_COMMUNICATION = "app.hushfacebook.permission.prod.FB_APP_COMMUNICATION"
+private const val SHARED_RECEIVER_ACCESS = "app.hushfacebook.receiver.permission.ACCESS"
+
+/** 587's maker of the app communication permission name, after Install beside Meta apps renamed its format. */
+private fun sharedFormat(body: String = """
+    const-string v0, "$SHARED_FORMAT"
+    return-object v0
+""".trimIndent()) = fixtureMethod("LX/0k8;->A00()Ljava/lang/String;", body, 1,
+    AccessFlags.PUBLIC.value or AccessFlags.STATIC.value)
+
+/** One of 587's two direct loads of the app communication permission, under its shared name. */
+private fun sharedLoad(id: String, body: String = """
+    const-string v0, "$SHARED_APP_COMMUNICATION"
+    return-void
+""".trimIndent()) = fixtureMethod(id, body, 1)
+
 class CloneInstallPatchTest {
     @Test fun theManifestMovesWholeToTheNewPackageAndKeepsClassNames() {
         val manifest = xml(STOCK).apply { addSettingsEntry() }
         val result = manifest.renameForClone(COPY, "Copy")
 
         assertEquals(COPY, manifest.documentElement.getAttribute("package"))
+        // The two permissions every patched Meta app shares move under the copy's package too: their shared
+        // names are only shared while every patched app carries one signing key, and a copy signed with any
+        // other key can't redeclare them (INSTALL_FAILED_DUPLICATE_PERMISSION). Nothing is dropped and every
+        // protection level stays exactly as it was.
         assertEquals(listOf("$COPY.provider.ACCESS", "$COPY.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
-            "app.hushfacebook.permission.prod.FB_APP_COMMUNICATION"), manifest.elements("permission").map { it.getAttribute("android:name") })
+            "$COPY.permission.prod.FB_APP_COMMUNICATION", "$COPY.receiver.permission.ACCESS"),
+            manifest.elements("permission").map { it.getAttribute("android:name") })
+        assertTrue(manifest.elements("permission").all { it.getAttribute("android:protectionLevel") == "signature" })
+        assertEquals(mapOf("com.facebook.orca.provider.ACCESS" to "$COPY.provider.ACCESS",
+            "com.facebook.orca.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" to "$COPY.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+            "app.hushfacebook.permission.prod.FB_APP_COMMUNICATION" to "$COPY.permission.prod.FB_APP_COMMUNICATION",
+            "app.hushfacebook.receiver.permission.ACCESS" to "$COPY.receiver.permission.ACCESS"), result.permissions)
         assertEquals(listOf("$COPY.provider.ACCESS", "$COPY.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION", "com.facebook.katana.provider.ACCESS",
-            "app.hushfacebook.permission.prod.FB_APP_COMMUNICATION"), manifest.elements("uses-permission").map { it.getAttribute("android:name") })
+            "$COPY.permission.prod.FB_APP_COMMUNICATION", "$COPY.receiver.permission.ACCESS"),
+            manifest.elements("uses-permission").map { it.getAttribute("android:name") })
+        assertEquals("$COPY.permission.prod.FB_APP_COMMUNICATION", manifest.named("receiver", "stock.Notify").getAttribute("android:permission"))
+        assertEquals("$COPY.receiver.permission.ACCESS",
+            manifest.named("receiver", "com.facebook.device_id.UniqueIdSupplier").getAttribute("android:permission"))
+        assertTrue(manifest.values().none { it.startsWith("app.hushfacebook.") }, "No shared permission name survives")
         assertEquals("$COPY.messages;$COPY.contacts", manifest.named("provider", "stock.Messages").getAttribute("android:authorities"))
         assertEquals("$COPY.provider.ACCESS", manifest.named("provider", "stock.Messages").getAttribute("android:permission"))
         assertEquals("$COPY.provider.ACCESS", manifest.named("provider", "stock.Attachments").getAttribute("android:readPermission"))
@@ -416,6 +451,8 @@ class CloneInstallPatchTest {
         assertRefused(STOCK.replace("com.facebook.orca.contacts", "com.facebook.orca.x.messages"), "com.facebook.orca.x")
         // Without Install beside Meta apps both apps would declare Meta's own permission.
         assertRefused(STOCK.replace("app.hushfacebook.permission.prod", "com.facebook.permission.prod"))
+        // A shared-looking name the clone doesn't know can't be carried over either: it may be another app's.
+        assertRefused(STOCK.replace("app.hushfacebook.receiver.permission.ACCESS", "app.hushfacebook.other.permission.ACCESS"))
         assertRefused(STOCK.replace("""<permission android:name="com.facebook.orca.provider.ACCESS"""", """<permission android:name="other.ACCESS""""))
         assertRefused(STOCK.replace("package=\"com.facebook.orca\"", "package=\"com.facebook.orca.hush\""))
         assertRefused(STOCK, "com.facebook.orca")
@@ -429,6 +466,47 @@ class CloneInstallPatchTest {
         for (label in listOf(CLONE_DEFAULT_LABEL, "Copy", "Messenger 2", "Work (Hush)", "Chat+", "Messages, work")) assertTrue(isCloneLabel(label), label)
         for (label in listOf(null, "", " Copy", "Copy ", "@string/app_name", "?attr/label", "Copy\nTwo", "x".repeat(41), "<b>Copy</b>"))
             assertFalse(isCloneLabel(label), label)
+    }
+
+    @Test fun theSharedPermissionsTakeTheClonesOwnNamesInCodeToo() {
+        // The tested build's three loads, under the names Install beside Meta apps left them.
+        assertEquals(mapOf(
+            "LX/0k8;->A00()Ljava/lang/String;@7" to SHARED_FORMAT,
+            "LX/0yY;->A03()V@25" to SHARED_APP_COMMUNICATION,
+            "LX/1h7;->A09(Lcom/facebook/auth/usersession/FbUserSession;LX/1h7;Ljava/lang/String;Ljava/lang/String;)V@34" to SHARED_APP_COMMUNICATION,
+        ), expectedSharedPermissionSites("347415350"))
+        assertEquals("$COPY.receiver.permission.ACCESS", cloneSharedName(SHARED_RECEIVER_ACCESS, COPY))
+        assertEquals("$COPY.permission.prod.FB_APP_COMMUNICATION", cloneSharedName(SHARED_APP_COMMUNICATION, COPY))
+        assertNull(cloneSharedName("app.hushfacebook.other.permission.ACCESS", COPY))
+        assertNull(cloneSharedName("com.facebook.orca.provider.ACCESS", COPY))
+
+        val format = sharedFormat()
+        val sender = sharedLoad("LX/0yY;->A03()V")
+        val checker = sharedLoad("LX/1h7;->A09()V")
+        val classes = listOf(fixtureClass("LX/0k8;", listOf(format)), fixtureClass("LX/0yY;", listOf(sender)),
+            fixtureClass("LX/1h7;", listOf(checker)))
+        assertEquals(mapOf("LX/0k8;->A00()Ljava/lang/String;@0" to SHARED_FORMAT,
+            "LX/0yY;->A03()V@0" to SHARED_APP_COMMUNICATION, "LX/1h7;->A09()V@0" to SHARED_APP_COMMUNICATION),
+            findSharedPermissionSites(classes))
+        sharedPermissionEdits(listOf(format to 0, sender to 0, checker to 0), COPY)()
+        // The format still formats to the permission the clone declares, and both direct loads name it too.
+        assertEquals(0 to "$COPY.permission.%s.FB_APP_COMMUNICATION", format.loads(0))
+        assertEquals(0 to "$COPY.permission.prod.FB_APP_COMMUNICATION", sender.loads(0))
+        assertEquals(0 to "$COPY.permission.prod.FB_APP_COMMUNICATION", checker.loads(0))
+    }
+
+    @Test fun aChangedSharedPermissionLoadStopsThePatchBeforeAnythingChanges() {
+        // A load renamed back to Meta's name, or to a name nobody pinned, is no longer a shared permission site.
+        val tampered = sharedLoad("LX/0yY;->A03()V", "const-string v0, \"com.facebook.receiver.permission.ACCESS\"\nreturn-void")
+        assertTrue(findSharedPermissionSites(listOf(fixtureClass("LX/0yY;", listOf(tampered)))).isEmpty())
+        val before = tampered.code()
+        assertFailsWith<PatchException> { sharedPermissionEdits(listOf(tampered to 0), COPY) }
+        assertEquals(before, tampered.code())
+        // A site listed twice, or a name that was never the load's, changes nothing either.
+        val load = sharedLoad("LX/0yY;->A03()V")
+        assertFailsWith<PatchException> { sharedPermissionEdits(listOf(load to 0, load to 0), COPY) }
+        assertFailsWith<PatchException> { sharedPermissionEdits(listOf(load to 1), COPY) }
+        assertEquals(0 to SHARED_APP_COMMUNICATION, load.loads(0))
     }
 
     @Test fun thePatchStartsOffAndItsOptionsRefuseUnusableValues() {
@@ -721,7 +799,8 @@ class CloneInstallPatchTest {
                     resources.document("AndroidManifest.xml").use { manifest ->
                         assertEquals(owner, manifest.documentElement.getAttribute("package"), name)
                         assertEquals(listOf("$owner.messages", owner + SETTINGS_AUTHORITY_SUFFIX), manifest.authorities(), name)
-                        assertEquals(listOf("$owner.provider.ACCESS", "app.hushfacebook.receiver.permission.ACCESS"),
+                        assertEquals(listOf("$owner.provider.ACCESS",
+                            if (name == "on") "$owner.receiver.permission.ACCESS" else "app.hushfacebook.receiver.permission.ACCESS"),
                             manifest.elements("permission").map { it.getAttribute("android:name") }, name)
                         assertEquals("$owner.provider.ACCESS", manifest.named("provider", "stock.Messages").getAttribute("android:permission"), name)
                         assertEquals(owner, manifest.named("receiver", "stock.Push").getElementsByTagName("category")
@@ -819,9 +898,11 @@ class CloneInstallPatchTest {
             assertTrue(CLONE_DEFAULT_PACKAGE + SETTINGS_AUTHORITY_SUFFIX in moved && "$CLONE_DEFAULT_PACKAGE$TAM_SUFFIX" in moved, code)
             assertEquals(queried, manifest.elements("queries").flatMap { it.getElementsByTagName("provider").let { nodes ->
                 (0 until nodes.length).map { (nodes.item(it) as Element).getAttribute("android:authorities") } } }, code)
-            assertTrue(manifest.elements("permission").all { it.getAttribute("android:name").let { name ->
-                name.startsWith("$CLONE_DEFAULT_PACKAGE.") || name.startsWith("app.hushfacebook.") } }, code)
-            assertEquals(5, result.permissions.size, code)
+            // Every declared permission — Messenger's five and the two shared ones — ends up under the clone's
+            // package, so no other app can already own any of them.
+            assertTrue(manifest.elements("permission").all {
+                it.getAttribute("android:name").startsWith("$CLONE_DEFAULT_PACKAGE.") }, code)
+            assertEquals(7, result.permissions.size, code)
             assertTrue(manifest.elements("*").all { element -> element.getAttribute("android:taskAffinity").let {
                 it.isEmpty() || it.startsWith("$CLONE_DEFAULT_PACKAGE.") } }, code)
             assertTrue(result.pushCategories > 0, code)

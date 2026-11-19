@@ -154,6 +154,33 @@ class CertificateChecks(unittest.TestCase):
         self.assertIn(PERMISSION, problems[0])
         self.assertIn("com.facebook.katana", problems[0])
 
+    def test_clone_with_its_own_permission_names_passes_beside_a_different_key_owner(self):
+        # A clone declares the shared permissions under its own package, so the copy already
+        # installed — holding the shared name under another signing key — is no conflict at all.
+        installed = {"com.facebook.orca": apk()}
+        clone = checker.Apk(
+            "com.facebook.orca.n7test",
+            347415354,
+            "587.0.0.54.96",
+            frozenset({"com.facebook.orca.n7test.receiver.permission.ACCESS"}),
+            frozenset({B}),
+        )
+        self.assertEqual(
+            checker.conflicts(clone, installed, {PERMISSION: "com.facebook.orca"}), []
+        )
+        # The same clone still carrying the shared name is refused, which is the failure this fixes.
+        still_shared = checker.Apk(
+            "com.facebook.orca.n7test",
+            347415354,
+            "587.0.0.54.96",
+            frozenset({PERMISSION}),
+            frozenset({B}),
+        )
+        problems = checker.conflicts(
+            still_shared, installed, {PERMISSION: "com.facebook.orca"}
+        )
+        self.assertIn("INSTALL_FAILED_DUPLICATE_PERMISSION", problems[0])
+
     def test_renamed_permissions_do_not_require_matching_stock_facebook_key(self):
         installed = {"com.facebook.katana": apk("com.facebook.katana", (B,))}
         self.assertEqual(
