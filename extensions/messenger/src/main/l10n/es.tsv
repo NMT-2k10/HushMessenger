@@ -597,6 +597,8 @@ message_log_photo	Foto
 message_log_photo_missing	No se pudo mostrar esta foto.
 message_log_keep_photos	Guardar las fotos en tamaño completo
 message_log_keep_photos_help	Descarga una foto al guardarla en el registro, con el tamaño que tenía al enviarse, así puedes verla aunque quien la envió la quite. Sin esto el registro guarda la vista previa pequeña de la notificación, y solo en chats que no están cifrados de extremo a extremo. Las fotos ocupan mucho más espacio que el resto del registro y se van cuando se va su mensaje.
+media_diagnostics	Diagnóstico de medios (versiones de prueba)
+media_diagnostics_help	Escribe una línea redactada por cada mensaje entrante en el registro del sistema (etiqueta HushMediaDiag): el tipo de medio, si es de una sola vista y la forma de sus direcciones, nunca la dirección en sí, un token ni el contenido del mensaje. Solo para versiones de prueba en un emulador; déjalo desactivado.
 message_log_keep_videos	Guardar los videos
 message_log_keep_videos_help	Descarga un video al guardarlo en el registro, así puedes verlo aunque quien lo envió lo quite. Messenger solo lo descarga cuando lo abres, y por eso se pierde si lo quitan antes. Los videos ocupan más espacio que todo lo demás del registro, hasta 16 MB cada uno, y se van cuando se va su mensaje.
 message_log_video_title	Video

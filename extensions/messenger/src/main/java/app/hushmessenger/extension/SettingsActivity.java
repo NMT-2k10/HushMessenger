@@ -1150,6 +1150,8 @@ public final class SettingsActivity extends Activity {
                         text.format("message_log_keep_videos_help"), false), 8);
                     ui.add(wrapper, controlRow(MessageLog.KEEP_VOICE, text.format(MessageLog.KEEP_VOICE),
                         text.format("message_log_keep_voice_help"), false), 8);
+                    ui.add(wrapper, controlRow(MediaDiagnostics.KEY, text.format(MediaDiagnostics.KEY),
+                        text.format("media_diagnostics_help"), false), 8);
                     if (Build.VERSION.SDK_INT >= 29) ui.add(wrapper, controlRow(MessageLog.SAVE_EXPIRING,
                         text.format(MessageLog.SAVE_EXPIRING), text.format("message_log_save_expiring_help"), false), 8);
                 }

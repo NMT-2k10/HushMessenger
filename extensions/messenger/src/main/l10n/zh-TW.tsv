@@ -597,6 +597,8 @@ message_log_photo	相片
 message_log_photo_missing	無法顯示這張相片。
 message_log_keep_photos	以原始大小保留相片
 message_log_keep_photos_help	相片寫進記錄時就以傳送時的大小下載，對方收回之後你還是看得到。沒開啟的話，記錄只會留下通知裡的小預覽圖，而且只有在沒有端對端加密的聊天室才有。相片比記錄的其他內容占去多很多空間，訊息消失時它們也一起消失。
+media_diagnostics	媒體診斷（測試版）
+media_diagnostics_help	為每則收到的訊息在系統日誌（標籤 HushMediaDiag）寫入一行遮蔽後的記錄：媒體類型、是否為限時訊息，以及位址的形狀——絕不寫入位址本身、權杖或訊息內容。僅供模擬器上的測試版使用，請保持關閉。
 message_log_keep_videos	保留影片
 message_log_keep_videos_help	影片寫進記錄時就先下載，對方收回之後你還是能觀看。Messenger 只在你打開時才下載，所以在那之前被收回就會跟著消失。影片比記錄裡其他東西都占空間，每個最多 16 MB，訊息消失時它們也一起消失。
 message_log_video_title	影片

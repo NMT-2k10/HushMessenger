@@ -464,6 +464,7 @@ public final class Settings {
         owners.put(MessageLog.KEEP_VOICE, MessageLog.KEY);
         owners.put(MessageLog.KEEP_PHOTOS, MessageLog.KEY);
         owners.put(MessageLog.KEEP_VIDEOS, MessageLog.KEY);
+        owners.put(MediaDiagnostics.KEY, MessageLog.KEY);
         owners.put(QuietChats.KEY, MessageLog.KEY);
         owners.put(MessageLogButton.KEY, MessageLog.KEY);
         owners.put(MessageLogButton.MENU_KEY, MessageLog.KEY);
@@ -1340,6 +1341,8 @@ public final class Settings {
     private static final ThreadLocal<MessageLogAttachment.Found> INCOMING_MEDIA = new ThreadLocal<>();
 
     public static void incomingMessageMedia(Object message) {
+        // Test builds may describe the media's shape here, redacted, under its own switch (HANDOFF §18).
+        MediaDiagnostics.observe(message);
         // Only the log keeps attachments. With the hook on for hidden words alone, nothing here is read.
         if (!wouldUse(MessageLog.KEY)) {
             INCOMING_MEDIA.remove();

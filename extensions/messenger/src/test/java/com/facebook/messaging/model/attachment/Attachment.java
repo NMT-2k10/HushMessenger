@@ -8,6 +8,7 @@ public final class Attachment {
     public int A00;
     public long A01;
     public AudioData A05;
+    public EphemeralMediaData A06;
     public ImageData A07;
     public VideoData A08;
     public String A0C;

@@ -704,6 +704,8 @@ final class SettingsText {
         ENGLISH.put("message_log_photo_missing", "This photo couldn't be shown.");
         ENGLISH.put("message_log_keep_photos", "Keep photos at full size");
         ENGLISH.put("message_log_keep_photos_help", "Downloads a photo as it's logged, at the size it was sent, so you can still see it after the sender unsends it. Without this the log keeps the small preview from the notification, and only in chats that aren't end-to-end encrypted. Photos use much more space than the rest of the log, and they go when their message does.");
+        ENGLISH.put("media_diagnostics", "Media diagnostics (test builds)");
+        ENGLISH.put("media_diagnostics_help", "Writes one redacted line per incoming message to the system log (tag HushMediaDiag): the media kind, whether it is view-once, and the shape of its addresses — never an address itself, a token or message content. For test builds on an emulator; leave off.");
         ENGLISH.put("message_log_keep_videos", "Keep videos");
         ENGLISH.put("message_log_keep_videos_help", "Downloads a video as it's logged, so you can still watch it after the sender unsends it. Messenger only downloads one when you open it, which is why an unsend before that takes it away. Videos use the most space of anything in the log, up to 16 MB each, and they go when their message does.");
         ENGLISH.put("message_log_video_title", "Video");

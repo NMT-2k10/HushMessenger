@@ -597,6 +597,8 @@ message_log_photo	Fotoğraf
 message_log_photo_missing	Bu fotoğraf gösterilemedi.
 message_log_keep_photos	Fotoğrafları tam boyutta sakla
 message_log_keep_photos_help	Fotoğraf kayda eklenirken gönderildiği boyutuyla indirilir, böylece gönderen geri çekse bile görebilirsin. Bu kapalıyken kayıt yalnızca bildirimdeki küçük ön izlemeyi tutar, o da sadece uçtan uca şifreli olmayan sohbetlerde. Fotoğraflar kaydın geri kalanından çok daha fazla yer kaplar ve mesajları gittiğinde onlar da gider.
+media_diagnostics	Medya tanılama (test sürümleri)
+media_diagnostics_help	Gelen her mesaj için sistem günlüğüne (HushMediaDiag etiketi) tek satır karartılmış kayıt yazar: medya türü, tek seferlik görüntüleme olup olmadığı ve adreslerin biçimi — asla adresin kendisi, bir belirteç ya da mesaj içeriği değil. Yalnızca emülatördeki test sürümleri içindir; kapalı bırakın.
 message_log_keep_videos	Videoları sakla
 message_log_keep_videos_help	Video kayda eklenirken indirilir, böylece gönderen geri çekse bile izleyebilirsin. Messenger onu yalnızca sen açtığında indirir, bu yüzden ondan önceki bir geri çekme videoyu alıp götürür. Videolar kayıttaki her şeyden fazla yer kaplar, her biri 16 MB'a kadar, ve mesajları gittiğinde onlar da gider.
 message_log_video_title	Video
