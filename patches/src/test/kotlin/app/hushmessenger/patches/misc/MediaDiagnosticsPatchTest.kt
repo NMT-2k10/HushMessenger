@@ -32,7 +32,7 @@ class MediaDiagnosticsPatchTest {
 
     @Test fun findsTheAssemblyConstructorAndNotTheParcelOne() {
         val found = findDataBuiltHook(listOf(attachmentClass()))
-        assertEquals("$attachment<init>(LX/2pr;)V", found?.let(::hookId))
+        assertEquals("$attachment<init>(LX/2pr;)V", found?.hookId())
     }
 
     @Test fun assemblyFinderNeedsBothStores() {
@@ -56,7 +56,7 @@ class MediaDiagnosticsPatchTest {
 
     @Test fun findsThePlayerBridge() {
         val found = findPlayerBridgeHook(listOf(bridgeClass("LX/4TJ;"), attachmentClass()))
-        assertEquals("LX/4TJ;->A0C($session$message)$videoData", found?.let(::hookId))
+       assertEquals("LX/4TJ;->A0C($session$message)$videoData", found?.hookId())
     }
 
     @Test fun bridgeFinderNeedsTheVideoRead() {
