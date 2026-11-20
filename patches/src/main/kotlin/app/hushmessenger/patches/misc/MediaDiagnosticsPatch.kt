@@ -10,6 +10,7 @@ import app.morphe.patcher.patch.PatchException
 import app.morphe.patcher.patch.mutableClassDefBy
 import app.morphe.patcher.patch.patch
 import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod
+import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.ClassDef
 import com.android.tools.smali.dexlib2.iface.Method
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
@@ -28,11 +29,21 @@ private const val PARCEL = "Landroid/os/Parcel;"
 private fun fail(detail: String): Nothing =
     throw PatchException("$MEDIA_DIAGNOSTICS_PATCH: $detail. Start with an unmodified supported APK.")
 
-/** Whether [method] stores (IPUT family) or reads (IGET family) the [type] field an [owner] class declares. */
-private fun touchesField(method: Method, owner: String, type: String, opcodeFamily: String): Boolean =
+/** The field-store and field-read opcode families, matched as enum values, never by name text. */
+private val FIELD_STORES = setOf(
+    Opcode.IPUT, Opcode.IPUT_WIDE, Opcode.IPUT_OBJECT, Opcode.IPUT_BOOLEAN,
+    Opcode.IPUT_BYTE, Opcode.IPUT_CHAR, Opcode.IPUT_SHORT,
+)
+private val FIELD_READS = setOf(
+    Opcode.IGET, Opcode.IGET_WIDE, Opcode.IGET_OBJECT, Opcode.IGET_BOOLEAN,
+    Opcode.IGET_BYTE, Opcode.IGET_CHAR, Opcode.IGET_SHORT,
+)
+
+/** Whether [method] stores (writes) or reads the [type] field an [owner] class declares. */
+private fun touchesField(method: Method, owner: String, type: String, writes: Boolean): Boolean =
     method.implementation?.instructions?.any { instruction ->
         val reference = (instruction as? ReferenceInstruction)?.reference as? FieldReference ?: return@any false
-        instruction.opcode.name.startsWith(opcodeFamily) &&
+        instruction.opcode in (if (writes) FIELD_STORES else FIELD_READS) &&
             reference.definingClass == owner && reference.type == type
     } ?: false
 
@@ -47,8 +58,8 @@ internal fun findDataBuiltHook(classes: Iterable<ClassDef>): Method? {
     return attachment.methods.filter { method ->
         method.name == "<init>" && method.returnType == "V" &&
             method.parameterTypes.size == 1 && method.parameterTypes[0].toString() != PARCEL &&
-            touchesField(method, ATTACHMENT, EPHEMERAL_DATA, "IPUT") &&
-            touchesField(method, ATTACHMENT, VIDEO_DATA, "IPUT")
+            touchesField(method, ATTACHMENT, EPHEMERAL_DATA, writes = true) &&
+            touchesField(method, ATTACHMENT, VIDEO_DATA, writes = true)
     }.singleOrNull()
 }
 
@@ -62,7 +73,7 @@ internal fun findPlayerBridgeHook(classes: Iterable<ClassDef>): Method? =
     classes.flatMap { it.methods }.filter { method ->
         method.parameterTypes.map { it.toString() } == listOf(SESSION, MESSAGE) &&
             method.returnType == VIDEO_ATTACHMENT_DATA &&
-            touchesField(method, ATTACHMENT, VIDEO_DATA, "IGET")
+            touchesField(method, ATTACHMENT, VIDEO_DATA, writes = false)
     }.singleOrNull()
 
 /** The assembly constructor again, as a mutable method: right shape, and a local register for the gate. */
@@ -143,7 +154,7 @@ val mediaDiagnosticsPatch = patch(
         builtMethod.validateDataBuiltHook()
         builtMethod.injectDataBuilt()
         val bridgeMethod = mutableClassDefBy(bridge.definingClass).methods
-           .firstOrNull { it.hookId() == bridge.hookId() }
+            .firstOrNull { it.hookId() == bridge.hookId() }
             ?: fail("the player bridge method could not be reopened for editing")
         bridgeMethod.validatePlayerBridgeHook()
         bridgeMethod.injectPlayerBridge()
