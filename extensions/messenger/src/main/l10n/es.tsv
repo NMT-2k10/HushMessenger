@@ -936,3 +936,51 @@ invisible_buttons.title	Botones invisibles
 invisible_buttons.description	Vuelve invisibles, o medio transparentes, los botones que elijas abajo, pero conservan su lugar, su tamaño y lo que hacen, así que un toque sigue llegando. Funciona en la lista de chats, dentro de un chat y en los menús, también con los botones de HushMessenger. Cada botón que Messenger te ha mostrado aparece con el nombre que dice un lector de pantalla, así que usa Messenger un rato para llenar la lista.
 ios_bars.title	Barras del chat translúcidas
 ios_bars.description	La barra de arriba del chat y la caja de mensajes se vuelven translúcidas, con los mensajes pasando por debajo y asomando borrosos, como lo hacen las barras de un iPhone. Necesita Android 12 o posterior.
+
+# Temporary Vault (72 hours).
+vault_72h.title	Bóveda temporal (72 horas)
+vault_72h.description	Guarda los mensajes en este teléfono durante 72 horas cuando llegan y cuando un chat abierto los muestra, para que puedas seguir leyéndolos si se anula su envío, y elimina cada copia cuando pasan sus 72 horas. Los mensajes de una sola visualización nunca se guardan. Está cifrado y se queda en tu teléfono. Las fotos, los vídeos y los mensajes de voz solo se guardan con los interruptores de abajo activados.
+vault_title	Bóveda temporal
+vault_hint	Todo lo que hay aquí se guardó en este teléfono cuando llegó y se elimina 72 horas después. Los mensajes de una sola visualización nunca se guardan.
+vault_view	Abrir la bóveda
+vault_clear	Vaciar la bóveda
+vault_cleared	Bóveda vaciada
+vault_clear_failed	No se pudo vaciar la bóveda
+vault_empty	Todavía no hay nada en la bóveda. Los mensajes nuevos aparecen aquí cuando llegan.
+vault_search_hint	Buscar mensajes, personas y chats
+vault_filter_all	Todos los mensajes
+vault_filter_recalled	Anulados
+vault_filter_media	Fotos y vídeos
+vault_filter_stickers	Pegatinas y GIF
+vault_filter_audio_files	Audio y archivos
+vault_filter_conversations	Conversaciones
+vault_all_chats	Todos los chats
+vault_recalled	Anulado
+vault_edited	Editado
+vault_edited_from	Antes de la edición: %1$s
+vault_media_stored	Guardado en este teléfono
+vault_media_unavailable	No se pudo obtener el contenido
+vault_media_failed	La descarga del contenido falló
+vault_media_storage_full	El almacenamiento del teléfono estaba lleno
+vault_media_pending	Obteniendo…
+vault_open_media	Abrir
+vault_close	Cerrar
+vault_stats	%1$s mensajes · %2$s anulados · %3$s con contenido guardado · la próxima copia caduca %4$s
+vault_expires	caduca %1$s
+vault_more	Mostrar más
+vault_conversation_count	%1$s mensajes
+vault_unknown_sender	Remitente desconocido
+vault_text	Mensaje
+vault_photo	Foto
+vault_video	Vídeo
+vault_audio	Audio
+vault_sticker	Pegatina
+vault_gif	GIF
+vault_file	Archivo
+vault_attachment	Adjunto
+vault_72h_keep_photos	Guardar las fotos en la bóveda
+vault_72h_keep_photos_help	Cuando está activado, la foto que llega con un mensaje se guarda en la bóveda durante las mismas 72 horas. Desactivado, solo se guarda el texto del mensaje.
+vault_72h_keep_videos	Guardar los vídeos en la bóveda
+vault_72h_keep_videos_help	Cuando está activado, el vídeo que llega con un mensaje se guarda en la bóveda durante las mismas 72 horas y se descarga en segundo plano. Desactivado, solo se guarda el texto del mensaje.
+vault_72h_keep_voice	Guardar los mensajes de voz en la bóveda
+vault_72h_keep_voice_help	Cuando está activado, un mensaje de voz se guarda en la bóveda durante las mismas 72 horas. Desactivado, solo se guarda que llegó uno.

@@ -936,3 +936,51 @@ invisible_buttons.title	Görünmez düğmeler
 invisible_buttons.description	Aşağıda seçtiğin düğmeleri görünmez ya da yarı saydam yapar ama yeri, boyutu ve yaptığı iş aynı kalır, yani dokunuş hâlâ işler. Sohbet listesinde, sohbetin içinde ve menülerde çalışır, HushMessenger'ın kendi düğmeleri de dahil. Messenger'ın sana gösterdiği her düğme, ekran okuyucunun söylediği adla listelenir, bu yüzden listeyi doldurmak için Messenger'ı biraz kullan.
 ios_bars.title	Yarı saydam sohbet çubukları
 ios_bars.description	Sohbetin üst çubuğu ve mesaj kutusu yarı saydam olur, mesajlar altlarından kayar ve bulanık görünür, iPhone'daki çubuklar gibi. Android 12 veya sonrası gerekir.
+
+# Temporary Vault (72 hours).
+vault_72h.title	Geçici Kasa (72 saat)
+vault_72h.description	Mesajları bu telefonda, geldiklerinde ve açık bir sohbet gösterdiğinde 72 saat boyunca saklar; böylece gönderim iptal edilse bile okuyabilirsiniz ve her kopya 72 saati dolduğunda silinir. Tek görüntülemelik mesajlar asla kaydedilmez. Şifrelidir ve telefonunuzda kalır. Fotoğraflar, videolar ve sesli mesajlar yalnızca altındaki anahtarlar açıkken saklanır.
+vault_title	Geçici Kasa
+vault_hint	Buradaki her şey, mesaj geldiğinde bu telefona kaydedildi ve 72 saat sonra silinir. Tek görüntülemelik mesajlar asla kaydedilmez.
+vault_view	Kasayı Aç
+vault_clear	Kasayı Temizle
+vault_cleared	Kasa temizlendi
+vault_clear_failed	Kasa temizlenemedi
+vault_empty	Kasada henüz bir şey yok. Yeni mesajlar geldikçe burada görünür.
+vault_search_hint	Mesajlarda, kişilerde ve sohbetlerde ara
+vault_filter_all	Tüm mesajlar
+vault_filter_recalled	Geri alınanlar
+vault_filter_media	Fotoğraflar ve Videolar
+vault_filter_stickers	Çıkartmalar ve GIF'ler
+vault_filter_audio_files	Ses ve Dosyalar
+vault_filter_conversations	Sohbetler
+vault_all_chats	Tüm sohbetler
+vault_recalled	Geri alındı
+vault_edited	Düzenlendi
+vault_edited_from	Düzenlemeden önce: %1$s
+vault_media_stored	Bu telefona kaydedildi
+vault_media_unavailable	Medya alınamadı
+vault_media_failed	Medya indirme başarısız oldu
+vault_media_storage_full	Telefonun depolama alanı doluydu
+vault_media_pending	Alınıyor…
+vault_open_media	Aç
+vault_close	Kapat
+vault_stats	%1$s mesaj · %2$s geri alındı · %3$s medyası kaydedildi · sonraki kopyanın süresi %4$s doluyor
+vault_expires	süresi doluyor: %1$s
+vault_more	Daha fazla göster
+vault_conversation_count	%1$s mesaj
+vault_unknown_sender	Bilinmeyen gönderen
+vault_text	Mesaj
+vault_photo	Fotoğraf
+vault_video	Video
+vault_audio	Ses
+vault_sticker	Çıkartma
+vault_gif	GIF
+vault_file	Dosya
+vault_attachment	Ek
+vault_72h_keep_photos	Fotoğrafları Kasada sakla
+vault_72h_keep_photos_help	Açıkken, bir mesajla gelen fotoğraf Kasada aynı 72 saat boyunca saklanır. Kapalıyken yalnızca mesajın metni saklanır.
+vault_72h_keep_videos	Videoları Kasada sakla
+vault_72h_keep_videos_help	Açıkken, bir mesajla gelen video Kasada aynı 72 saat boyunca saklanır ve arka planda indirilir. Kapalıyken yalnızca mesajın metni saklanır.
+vault_72h_keep_voice	Sesli mesajları Kasada sakla
+vault_72h_keep_voice_help	Açıkken, bir sesli mesaj Kasada aynı 72 saat boyunca saklanır. Kapalıyken yalnızca bir sesli mesajın geldiği kaydedilir.

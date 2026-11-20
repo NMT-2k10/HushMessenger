@@ -936,3 +936,51 @@ invisible_buttons.title	隱形按鈕
 invisible_buttons.description	把你在下面挑選的按鈕變成看不見或半透明，但位置、大小和功能都不變，所以點下去照樣有用。聊天列表、聊天室裡和選單都適用，HushMessenger 自己的按鈕也包括在內。Messenger 顯示給你的每個按鈕都會用螢幕閱讀器唸出的名稱列在這裡，所以先使用 Messenger 一陣子來填滿清單。
 ios_bars.title	半透明聊天列
 ios_bars.description	聊天室的頂端列和訊息框變成半透明，訊息會從下面滑過並透出模糊的樣子，就像 iPhone 的列一樣。需要 Android 12 或更新版本。
+
+# Temporary Vault (72 hours).
+vault_72h.title	暫存保管庫（72 小時）
+vault_72h.description	在訊息到達時以及在開啟的聊天顯示訊息時，將訊息保存在這支手機上 72 小時，讓你在訊息被收回後仍可閱讀，並在每份副本滿 72 小時時刪除。閱後即焚訊息永遠不會被保存。內容經過加密，只保留在你的手機上。相片、影片和語音訊息只有在下方開關開啟時才會保留。
+vault_title	暫存保管庫
+vault_hint	這裡的所有內容都是在訊息到達時保存在這支手機上的，並會在 72 小時後刪除。閱後即焚訊息永遠不會被保存。
+vault_view	開啟保管庫
+vault_clear	清空保管庫
+vault_cleared	保管庫已清空
+vault_clear_failed	無法清空保管庫
+vault_empty	保管庫目前是空的。新訊息到達時會出現在這裡。
+vault_search_hint	搜尋訊息、聯絡人和聊天
+vault_filter_all	所有訊息
+vault_filter_recalled	已收回
+vault_filter_media	相片與影片
+vault_filter_stickers	貼圖與 GIF
+vault_filter_audio_files	音訊與檔案
+vault_filter_conversations	對話
+vault_all_chats	所有聊天
+vault_recalled	已收回
+vault_edited	已編輯
+vault_edited_from	編輯前：%1$s
+vault_media_stored	已保存在這支手機上
+vault_media_unavailable	無法取得媒體內容
+vault_media_failed	媒體下載失敗
+vault_media_storage_full	手機儲存空間已滿
+vault_media_pending	正在取得…
+vault_open_media	開啟
+vault_close	關閉
+vault_stats	%1$s 則訊息 · %2$s 則已收回 · %3$s 則已保存媒體 · 下一份副本將於 %4$s 到期
+vault_expires	將於 %1$s 到期
+vault_more	顯示更多
+vault_conversation_count	%1$s 則訊息
+vault_unknown_sender	未知寄件者
+vault_text	訊息
+vault_photo	相片
+vault_video	影片
+vault_audio	音訊
+vault_sticker	貼圖
+vault_gif	GIF
+vault_file	檔案
+vault_attachment	附件
+vault_72h_keep_photos	在保管庫中保留相片
+vault_72h_keep_photos_help	開啟時，隨訊息到達的相片會在保管庫中保留相同的 72 小時。關閉時，只保留訊息的文字。
+vault_72h_keep_videos	在保管庫中保留影片
+vault_72h_keep_videos_help	開啟時，隨訊息到達的影片會在保管庫中保留相同的 72 小時，並在背景下載。關閉時，只保留訊息的文字。
+vault_72h_keep_voice	在保管庫中保留語音訊息
+vault_72h_keep_voice_help	開啟時，語音訊息會在保管庫中保留相同的 72 小時。關閉時，只記錄曾有一則語音訊息到達。

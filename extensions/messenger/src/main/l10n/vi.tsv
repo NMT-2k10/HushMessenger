@@ -936,3 +936,51 @@ invisible_buttons.title	Nút vô hình
 invisible_buttons.description	Làm các nút bạn chọn bên dưới vô hình hoặc trong suốt một phần nhưng vẫn giữ nguyên vị trí, kích thước và chức năng, nên một lần nhấn vẫn trúng. Dùng được ở danh sách chat, trong đoạn chat và trong các menu, kể cả nút của HushMessenger. Mọi nút Messenger đã hiện cho bạn đều được liệt kê theo tên mà trình đọc màn hình gọi, vì vậy hãy dùng Messenger một lúc để lấp danh sách.
 ios_bars.title	Thanh chat trong mờ
 ios_bars.description	Thanh trên cùng của đoạn chat và hộp tin nhắn trở nên trong mờ, tin nhắn chạy bên dưới và hiện lên mờ qua thanh, giống các thanh trên iPhone. Cần Android 12 hoặc mới hơn.
+
+# Temporary Vault (72 hours).
+vault_72h.title	Kho Tạm Thời (72 giờ)
+vault_72h.description	Lưu tin nhắn trên điện thoại này trong 72 giờ ngay khi tin đến và khi cuộc trò chuyện đang mở hiển thị tin, để bạn vẫn đọc được nếu tin bị thu hồi, rồi xóa từng bản sao khi hết 72 giờ. Tin nhắn xem một lần không bao giờ được lưu. Dữ liệu được mã hóa và chỉ nằm trên điện thoại của bạn. Ảnh, video và tin nhắn thoại chỉ được giữ khi bật các công tắc bên dưới mục này.
+vault_title	Kho Tạm Thời
+vault_hint	Mọi thứ ở đây được lưu trên điện thoại này ngay khi tin đến và sẽ bị xóa sau 72 giờ. Tin nhắn xem một lần không bao giờ được lưu.
+vault_view	Mở Kho
+vault_clear	Xóa toàn bộ Kho
+vault_cleared	Đã xóa Kho
+vault_clear_failed	Không xóa được Kho
+vault_empty	Kho hiện đang trống. Tin nhắn mới sẽ xuất hiện ở đây ngay khi đến.
+vault_search_hint	Tìm tin nhắn, người và cuộc trò chuyện
+vault_filter_all	Tất cả tin nhắn
+vault_filter_recalled	Đã thu hồi
+vault_filter_media	Ảnh & Video
+vault_filter_stickers	Nhãn dán & GIF
+vault_filter_audio_files	Âm thanh & Tệp
+vault_filter_conversations	Cuộc trò chuyện
+vault_all_chats	Tất cả cuộc trò chuyện
+vault_recalled	Đã thu hồi
+vault_edited	Đã chỉnh sửa
+vault_edited_from	Trước khi chỉnh sửa: %1$s
+vault_media_stored	Đã lưu trên điện thoại này
+vault_media_unavailable	Không tải được nội dung đa phương tiện
+vault_media_failed	Tải nội dung đa phương tiện thất bại
+vault_media_storage_full	Bộ nhớ điện thoại đã đầy
+vault_media_pending	Đang tải…
+vault_open_media	Mở
+vault_close	Đóng
+vault_stats	%1$s tin nhắn · %2$s đã thu hồi · %3$s có nội dung đã lưu · bản sao tiếp theo hết hạn %4$s
+vault_expires	hết hạn %1$s
+vault_more	Hiển thị thêm
+vault_conversation_count	%1$s tin nhắn
+vault_unknown_sender	Người gửi không rõ
+vault_text	Tin nhắn
+vault_photo	Ảnh
+vault_video	Video
+vault_audio	Âm thanh
+vault_sticker	Nhãn dán
+vault_gif	GIF
+vault_file	Tệp
+vault_attachment	Tệp đính kèm
+vault_72h_keep_photos	Giữ ảnh trong Kho
+vault_72h_keep_photos_help	Khi bật, ảnh đi kèm tin nhắn sẽ được lưu trong Kho trong cùng 72 giờ. Khi tắt, chỉ nội dung chữ của tin nhắn được giữ.
+vault_72h_keep_videos	Giữ video trong Kho
+vault_72h_keep_videos_help	Khi bật, video đi kèm tin nhắn sẽ được lưu trong Kho trong cùng 72 giờ và được tải xuống ở chế độ nền. Khi tắt, chỉ nội dung chữ của tin nhắn được giữ.
+vault_72h_keep_voice	Giữ tin nhắn thoại trong Kho
+vault_72h_keep_voice_help	Khi bật, tin nhắn thoại sẽ được lưu trong Kho trong cùng 72 giờ. Khi tắt, chỉ ghi nhận rằng đã có một tin nhắn thoại đến.
