@@ -64,28 +64,84 @@ final class MediaDiagnostics {
         }
     }
 
-    /**
-     * The one line for [message]. Attachments are found the way MessageLogAttachment finds them — the message's
-     * list fields, by class name — because on an obfuscated build nothing here has a usable name.
-     */
-    static String describe(Object message) throws Exception {
-        int attachments = 0;
-        boolean sawList = false;
-        Probe probe = new Probe();
+    /** What one message's lists hold: how many attachments were found, and the merge of their shapes. */
+    private static final class Seen {
+        int attachments;
+        boolean sawList;
+        final Probe probe = new Probe();
+    }
+
+    private static Seen probeMessage(Object message) throws Exception {
+        Seen seen = new Seen();
         for (Field field : message.getClass().getDeclaredFields()) {
             if (!List.class.isAssignableFrom(field.getType())) continue;
             field.setAccessible(true);
             Object held = field.get(message);
             if (!(held instanceof List)) continue;
-            sawList = true;
+            seen.sawList = true;
             for (Object element : (List<?>) held) {
                 if (element == null || !ATTACHMENT.equals(element.getClass().getName())) continue;
-                attachments++;
-                probe.merge(probe(element));
+                seen.attachments++;
+                seen.probe.merge(probe(element));
             }
         }
-        StringBuilder line = new StringBuilder("media-diag v2 path=notification dir=incoming");
-        line.append(" attachments=").append(sawList ? String.valueOf(attachments) : "unknown");
+        return seen;
+    }
+
+    /**
+     * The one line for [message]. Attachments are found the way MessageLogAttachment finds them — the message's
+     * list fields, by class name — because on an obfuscated build nothing here has a usable name.
+     */
+    static String describe(Object message) throws Exception {
+        return line("media-diag v2 path=notification dir=incoming", probeMessage(message));
+    }
+
+    /**
+     * The player bridge is building a video's data out of [message] (HANDOFF §22): the notification line's
+     * shape under its own event, so one test log lines the two moments up and says whether the message that
+     * reached the bridge carries the video and the ephemeral marker the notification snapshot lacked.
+     */
+    static void observePlayerBridge(Object message) {
+        if (message == null) return;
+        try {
+            if (!wanted()) return;
+            sink.log(line("media-diag v2 event=player_bridge", probeMessage(message)));
+        } catch (Throwable error) {
+            Settings.hookFailedPrivately(KEY, "Can't describe a message at the player bridge", error);
+        }
+    }
+
+    /**
+     * An attachment is being assembled from its builder (HANDOFF §22). Only ephemeral assemblies are logged:
+     * that is the data layer putting a disappearing message's media together, the moment the notification
+     * snapshot has already missed, and the line says whether a video was assembled with the marker.
+     */
+    static void observeDataBuilt(Object builder) {
+        if (builder == null) return;
+        try {
+            if (!wanted()) return;
+            Probe probe = probe(builder);
+            if (!"present".equals(probe.ephemeralData)) return;
+            StringBuilder line = new StringBuilder("media-diag v2 event=data_built");
+            line.append(" ephemeral=").append(probe.ephemeral);
+            line.append(" videoData=").append(probe.videoData);
+            line.append(" uriFields=").append(probe.uriFields < 0 ? "na" : String.valueOf(probe.uriFields));
+            line.append(" uriSet=").append(probe.uriSet);
+            line.append(" uris=[");
+            for (int i = 0; i < probe.addresses.size(); i++) {
+                if (i > 0) line.append(' ');
+                line.append(probe.addresses.get(i));
+            }
+            sink.log(line.append(']').toString());
+        } catch (Throwable error) {
+            Settings.hookFailedPrivately(KEY, "Can't describe an assembled attachment", error);
+        }
+    }
+
+    private static String line(String head, Seen seen) {
+        Probe probe = seen.probe;
+        StringBuilder line = new StringBuilder(head);
+        line.append(" attachments=").append(seen.sawList ? String.valueOf(seen.attachments) : "unknown");
         line.append(" video=").append(probe.video ? "yes" : "no");
         line.append(" videoField=").append(probe.videoField);
         line.append(" videoData=").append(probe.videoData);
@@ -96,7 +152,7 @@ final class MediaDiagnostics {
         line.append(" imageData=").append(probe.imageData);
         line.append(" uriFields=").append(probe.uriFields < 0 ? "na" : String.valueOf(probe.uriFields));
         line.append(" uriSet=").append(probe.uriSet);
-        line.append(" filled=").append(attachments == 0 ? "na" : probe.filledRefs + "/" + probe.totalRefs);
+        line.append(" filled=").append(seen.attachments == 0 ? "na" : probe.filledRefs + "/" + probe.totalRefs);
         line.append(" uris=[");
         for (int i = 0; i < probe.addresses.size(); i++) {
             if (i > 0) line.append(' ');

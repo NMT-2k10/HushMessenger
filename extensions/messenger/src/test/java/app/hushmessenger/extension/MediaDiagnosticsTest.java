@@ -173,6 +173,65 @@ public class MediaDiagnosticsTest {
         assertTrue(lines.get(0), lines.get(0).contains("ephemeralData=null"));
     }
 
+    /** An attachment builder's shape: the media sits in fields of the same types the attachment will carry. */
+    private static final class Builder {
+        public EphemeralMediaData A06;
+        public VideoData A08;
+    }
+
+    @Test public void dataBuiltLogsAnEphemeralAssembly() {
+        enable();
+        Builder builder = new Builder();
+        builder.A06 = EphemeralMediaData.viewOnce();
+        builder.A08 = new VideoData(Uri.parse(PLAYABLE), Uri.parse(THUMB));
+        MediaDiagnostics.observeDataBuilt(builder);
+        assertEquals(1, lines.size());
+        String line = lines.get(0);
+        assertTrue(line, line.contains("event=data_built"));
+        assertTrue(line, line.contains("ephemeral=type:VIEW_ONCE,state:UNOPENED"));
+        assertTrue(line, line.contains("videoData=present"));
+        assertTrue(line, line.contains("uriFields=4"));
+        assertTrue(line, line.contains("uriSet=2"));
+        assertFalse(line, line.contains("SECRET_SIGNATURE"));
+        assertFalse(line, line.contains("https://"));
+    }
+
+    @Test public void dataBuiltIgnoresAssembliesWithoutEphemeralData() {
+        enable();
+        Builder builder = new Builder();
+        builder.A08 = new VideoData(Uri.parse(PLAYABLE));
+        MediaDiagnostics.observeDataBuilt(builder);
+        MediaDiagnostics.observeDataBuilt(new Builder());
+        assertTrue(lines.isEmpty());
+    }
+
+    @Test public void dataBuiltSilentWhileOff() {
+        Builder builder = new Builder();
+        builder.A06 = EphemeralMediaData.viewOnce();
+        MediaDiagnostics.observeDataBuilt(builder);
+        assertTrue(lines.isEmpty());
+    }
+
+    @Test public void playerBridgeDescribesTheMessageItWasHanded() {
+        enable();
+        MediaDiagnostics.observePlayerBridge(viewOnceVideo());
+        assertEquals(1, lines.size());
+        String line = lines.get(0);
+        assertTrue(line, line.contains("event=player_bridge"));
+        assertTrue(line, line.contains("attachments=1"));
+        assertTrue(line, line.contains("video=yes"));
+        assertTrue(line, line.contains("ephemeral=type:VIEW_ONCE,state:UNOPENED"));
+        assertTrue(line, line.contains("uriSet=2"));
+        assertFalse(line, line.contains("SECRET_SIGNATURE"));
+        assertFalse(line, line.contains("fbcdn.net"));
+        assertFalse(line, line.contains("https://"));
+    }
+
+    @Test public void playerBridgeSilentWhileOff() {
+        MediaDiagnostics.observePlayerBridge(viewOnceVideo());
+        assertTrue(lines.isEmpty());
+    }
+
     @Test public void redactsFileAndDashShapes() {
         String file = MediaDiagnostics.redact("file:///storage/emulated/0/Movies/holiday.mp4");
         assertTrue(file, file.contains("scheme:file"));

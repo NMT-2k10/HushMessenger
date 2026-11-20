@@ -1340,6 +1340,21 @@ public final class Settings {
      */
     private static final ThreadLocal<MessageLogAttachment.Found> INCOMING_MEDIA = new ThreadLocal<>();
 
+    /** Whether the test-build media diagnostics hooks should hand anything over at all (HANDOFF §22). */
+    public static boolean mediaDiagnosticsWanted() {
+        return MediaDiagnostics.wanted();
+    }
+
+    /** Media diagnostics where an attachment is assembled from its builder (HANDOFF §22). */
+    public static void observeDataBuilt(Object builder) {
+        MediaDiagnostics.observeDataBuilt(builder);
+    }
+
+    /** Media diagnostics at the player bridge, as it builds a video's data from a message (HANDOFF §22). */
+    public static void observePlayerBridge(Object message) {
+        MediaDiagnostics.observePlayerBridge(message);
+    }
+
     public static void incomingMessageMedia(Object message) {
         // Test builds may describe the media's shape here, redacted, under its own switch (HANDOFF §18).
         MediaDiagnostics.observe(message);

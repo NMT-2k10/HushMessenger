@@ -1,0 +1,151 @@
+package app.hushmessenger.patches.misc
+
+import app.hushmessenger.patches.MessengerTarget
+import app.hushmessenger.patches.controls.SETTINGS
+import app.hushmessenger.patches.controls.hookId
+import app.hushmessenger.patches.controls.settingsExtension
+import app.hushmessenger.patches.messengerClasses
+import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
+import app.morphe.patcher.patch.PatchException
+import app.morphe.patcher.patch.mutableClassDefBy
+import app.morphe.patcher.patch.patch
+import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod
+import com.android.tools.smali.dexlib2.iface.ClassDef
+import com.android.tools.smali.dexlib2.iface.Method
+import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
+import com.android.tools.smali.dexlib2.iface.reference.FieldReference
+
+internal const val MEDIA_DIAGNOSTICS_PATCH = "Media diagnostics hooks"
+
+private const val ATTACHMENT = "Lcom/facebook/messaging/model/attachment/Attachment;"
+private const val EPHEMERAL_DATA = "Lcom/facebook/messaging/model/attachment/EphemeralMediaData;"
+private const val VIDEO_DATA = "Lcom/facebook/messaging/model/attachment/VideoData;"
+private const val SESSION = "Lcom/facebook/auth/usersession/FbUserSession;"
+private const val MESSAGE = "Lcom/facebook/messaging/model/messages/Message;"
+private const val VIDEO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/VideoAttachmentData;"
+private const val PARCEL = "Landroid/os/Parcel;"
+
+private fun fail(detail: String): Nothing =
+    throw PatchException("$MEDIA_DIAGNOSTICS_PATCH: $detail. Start with an unmodified supported APK.")
+
+/** Whether [method] stores (IPUT family) or reads (IGET family) the [type] field an [owner] class declares. */
+private fun touchesField(method: Method, owner: String, type: String, opcodeFamily: String): Boolean =
+    method.implementation?.instructions?.any { instruction ->
+        val reference = (instruction as? ReferenceInstruction)?.reference as? FieldReference ?: return@any false
+        instruction.opcode.name.startsWith(opcodeFamily) &&
+            reference.definingClass == owner && reference.type == type
+    } ?: false
+
+/**
+ * The constructor that assembles an attachment out of its builder: the attachment class's one single-argument
+ * constructor whose parameter is not a Parcel and whose body stores both the ephemeral marker and the video
+ * into the new attachment. Attachments are immutable once built (HANDOFF §21), so assembly is the one moment
+ * every data-layer path passes through with the full media in hand. Null unless exactly one constructor fits.
+ */
+internal fun findDataBuiltHook(classes: Iterable<ClassDef>): Method? {
+    val attachment = classes.firstOrNull { it.type == ATTACHMENT } ?: return null
+    return attachment.methods.filter { method ->
+        method.name == "<init>" && method.returnType == "V" &&
+            method.parameterTypes.size == 1 && method.parameterTypes[0].toString() != PARCEL &&
+            touchesField(method, ATTACHMENT, EPHEMERAL_DATA, "IPUT") &&
+            touchesField(method, ATTACHMENT, VIDEO_DATA, "IPUT")
+    }.singleOrNull()
+}
+
+/**
+ * The player bridge: the one method that builds a video's attachment data out of a session and a message and
+ * reads the message attachment's video to do it (HANDOFF §21). The shape is unique in the stock 587 build;
+ * null unless exactly one method fits, so a build that rearranges the bridge stops the patch instead of
+ * hooking a lookalike.
+ */
+internal fun findPlayerBridgeHook(classes: Iterable<ClassDef>): Method? =
+    classes.flatMap { it.methods }.filter { method ->
+        method.parameterTypes.map { it.toString() } == listOf(SESSION, MESSAGE) &&
+            method.returnType == VIDEO_ATTACHMENT_DATA &&
+            touchesField(method, ATTACHMENT, VIDEO_DATA, "IGET")
+    }.singleOrNull()
+
+/** The assembly constructor again, as a mutable method: right shape, and a local register for the gate. */
+internal fun MutableMethod.validateDataBuiltHook() {
+    if (name != "<init>" || parameterTypes.size != 1 || parameterTypes[0].toString() == PARCEL) {
+        fail("the attachment assembly constructor is not the one the finder described")
+    }
+    val registers = implementation?.registerCount ?: fail("the attachment assembly constructor has no code")
+    // This and the builder occupy the top two registers; the gate needs one local below them.
+    if (registers < 3) fail("the attachment assembly constructor has no register to spare for the gate")
+}
+
+/** The bridge method again, as a mutable method: right shape, and a local register for the gate. */
+internal fun MutableMethod.validatePlayerBridgeHook() {
+    if (parameterTypes.map { it.toString() } != listOf(SESSION, MESSAGE) || returnType != VIDEO_ATTACHMENT_DATA) {
+        fail("the player bridge method is not the one the finder described")
+    }
+    val registers = implementation?.registerCount ?: fail("the player bridge method has no code")
+    // This, the session and the message occupy the top three registers; the gate needs one local below them.
+    if (registers < 4) fail("the player bridge method has no register to spare for the gate")
+}
+
+/**
+ * Hands the builder to the extension when an attachment is assembled. The gate is asked first, so with the
+ * Media diagnostics switch off the hook is one static call and a branch, and nothing is read or kept.
+ */
+internal fun MutableMethod.injectDataBuilt() {
+    addInstructionsWithLabels(0, """
+        invoke-static {}, $SETTINGS->mediaDiagnosticsWanted()Z
+        move-result v0
+        if-eqz v0, :media_diag_skip
+        move-object v0, p1
+        invoke-static {v0}, $SETTINGS->observeDataBuilt(Ljava/lang/Object;)V
+        :media_diag_skip
+    """)
+}
+
+/** Hands the message to the extension as the bridge starts building a video's data out of it. Same gate. */
+internal fun MutableMethod.injectPlayerBridge() {
+    addInstructionsWithLabels(0, """
+        invoke-static {}, $SETTINGS->mediaDiagnosticsWanted()Z
+        move-result v0
+        if-eqz v0, :media_diag_skip
+        move-object/from16 v0, p2
+        invoke-static {v0}, $SETTINGS->observePlayerBridge(Ljava/lang/Object;)V
+        :media_diag_skip
+    """)
+}
+
+/**
+ * A standalone patch, not a control: it has no switch of its own (the Media diagnostics sub-switch gates it at
+ * runtime) and no ControlProfiles entry. Per AGENTS §3.3's second branch, the only verified build family is
+ * stock 587 (347415350, HANDOFF §21–§22); the finders are structural and fail hard on any build whose shapes
+ * differ, so an unsupported build stops this patch instead of receiving a guessed hook.
+ */
+val mediaDiagnosticsPatch = patch(
+    name = MEDIA_DIAGNOSTICS_PATCH,
+    description = "Test builds only. Adds the two read-only observation hooks the Media diagnostics switch " +
+        "reads at the points where an attachment is assembled and where a video's data is built for the " +
+        "player, so a test log can say what media a message carries at those moments. Each hook asks the " +
+        "switch first and does nothing while it's off; neither hook reads, keeps or changes any media. " +
+        "Pick it in Morphe Manager's Expert mode.",
+    default = false,
+) {
+    category("Fixes")
+    compatibleWith(MessengerTarget.COMPATIBILITY)
+    dependsOn(settingsExtension)
+
+    execute {
+        val classes = messengerClasses()
+        val built = findDataBuiltHook(classes)
+            ?: fail("no constructor assembles an attachment from its builder with both the ephemeral marker and the video")
+        val bridge = findPlayerBridgeHook(classes)
+            ?: fail("no method builds a video's attachment data from a session and a message")
+        val builtMethod = mutableClassDefBy(built.definingClass).methods
+            .firstOrNull { hookId(it) == hookId(built) }
+            ?: fail("the attachment assembly constructor could not be reopened for editing")
+        builtMethod.validateDataBuiltHook()
+        builtMethod.injectDataBuilt()
+        val bridgeMethod = mutableClassDefBy(bridge.definingClass).methods
+            .firstOrNull { hookId(it) == hookId(bridge) }
+            ?: fail("the player bridge method could not be reopened for editing")
+        bridgeMethod.validatePlayerBridgeHook()
+        bridgeMethod.injectPlayerBridge()
+    }
+}

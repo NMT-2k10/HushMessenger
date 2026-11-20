@@ -32,6 +32,8 @@ class DefaultSelectionPolicyTest {
             "only people who want the new look should get it. Its style option shows in Expert mode.",
         "GmsCore support" to "It points Messenger's Google Play services calls at microG-RE, so on a phone without " +
             "microG-RE push notifications stop, with no switch to send them back to Google.",
+        "Media diagnostics hooks" to "It adds read-only observation hooks for a test-build diagnostic, with no " +
+            "user-facing feature of its own, so only people running a media experiment should patch it in.",
     )
 
     private fun namedPatches(): List<JsonObject> {
