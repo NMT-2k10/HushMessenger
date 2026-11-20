@@ -73,6 +73,8 @@ public final class Settings {
             if (installed.contains(MessageLog.KEY)) MessageLog.scheduleExpiry();
             // Only when the installed list was read for sure, so a failed read can't cost a log the control still has.
             else if (listed && !preview) MessageLog.dropLeftovers(appContext);
+            if (installed.contains(Vault72h.KEY)) Vault72h.scheduleExpiry();
+            else if (listed && !preview) Vault72h.dropLeftovers(appContext);
         }
     }
 
@@ -468,6 +470,9 @@ public final class Settings {
         owners.put(MessageLogButton.KEY, MessageLog.KEY);
         owners.put(MessageLogButton.MENU_KEY, MessageLog.KEY);
         owners.put(MessageLogButton.CHAT_KEY, MessageLog.KEY);
+        owners.put(Vault72h.KEEP_PHOTOS, Vault72h.KEY);
+        owners.put(Vault72h.KEEP_VIDEOS, Vault72h.KEY);
+        owners.put(Vault72h.KEEP_VOICE, Vault72h.KEY);
         owners.put(StoryEye.KEY, StoryEye.OWNER);
         owners.put(CallCaptions.SPEAK, CallCaptions.KEY);
         owners.put(CallCaptions.DUCK, CallCaptions.KEY);
@@ -1317,7 +1322,7 @@ public final class Settings {
      * Hide messages with your words rides the same hook, so either switch brings the message through, and each path
      * below checks its own switch again.
      */
-    public static boolean logReceivedMessages() { return wouldUse(MessageLog.KEY) || HiddenWords.wanted(); }
+    public static boolean logReceivedMessages() { return wouldUse(MessageLog.KEY) || wouldUse(Vault72h.KEY) || HiddenWords.wanted(); }
 
     /**
      * The message's own id, which the notification hook hands over just before the text and thread (the constructor it
@@ -1340,14 +1345,24 @@ public final class Settings {
     private static final ThreadLocal<MessageLogAttachment.Found> INCOMING_MEDIA = new ThreadLocal<>();
 
     public static void incomingMessageMedia(Object message) {
-        // Only the log keeps attachments. With the hook on for hidden words alone, nothing here is read.
-        if (!wouldUse(MessageLog.KEY)) {
+        // Only the log and the vault keep attachments. With the hook on for hidden words alone, nothing here is read.
+        boolean forLog = wouldUse(MessageLog.KEY);
+        boolean forVault = wouldUse(Vault72h.KEY);
+        if (!forLog && !forVault) {
             INCOMING_MEDIA.remove();
+            INCOMING_VAULT_MEDIA.remove();
             return;
         }
-        MessageLogAttachment.Found found = MessageLogAttachment.found(message);
-        if (found == null) INCOMING_MEDIA.remove();
-        else INCOMING_MEDIA.set(found);
+        if (forLog) {
+            MessageLogAttachment.Found found = MessageLogAttachment.found(message);
+            if (found == null) INCOMING_MEDIA.remove();
+            else INCOMING_MEDIA.set(found);
+        } else INCOMING_MEDIA.remove();
+        if (forVault) {
+            MessageLogAttachment.Found found = MessageLogAttachment.foundForVault(message);
+            if (found == null) INCOMING_VAULT_MEDIA.remove();
+            else INCOMING_VAULT_MEDIA.set(found);
+        } else INCOMING_VAULT_MEDIA.remove();
     }
 
     static MessageLogAttachment.Found takeIncomingMessageMedia() {
@@ -1356,15 +1371,31 @@ public final class Settings {
         return found;
     }
 
+    /** The same message object, read for the vault: its own keep switches decide, and view-once is never taken. */
+    private static final ThreadLocal<MessageLogAttachment.Found> INCOMING_VAULT_MEDIA = new ThreadLocal<>();
+
+    static MessageLogAttachment.Found takeIncomingVaultMedia() {
+        MessageLogAttachment.Found found = INCOMING_VAULT_MEDIA.get();
+        INCOMING_VAULT_MEDIA.remove();
+        return found;
+    }
+
     /**
      * The notification hook hands the message here; the log stores it off this thread and swallows its own failures.
      * A message holding one of your hidden words is marked first, so its notification is dropped a moment later.
+     * The vault takes its own copy the same way, under its own switch: a message whose only attachment is
+     * view-once is the one thing it never takes.
      */
     public static void recordReceivedMessage(String text, String thread) {
         String id = takeIncomingMessageId();
         MessageLogAttachment.Found media = takeIncomingMessageMedia();
+        MessageLogAttachment.Found vaultMedia = takeIncomingVaultMedia();
         HiddenWords.received(text, id);
         if (wouldUse(MessageLog.KEY)) MessageLog.record(text, thread, id, media);
+        if (wouldUse(Vault72h.KEY)
+            && !(vaultMedia != null && MessageLogAttachment.EPHEMERAL.equals(vaultMedia.kind))) {
+            Vault72h.record(text, thread, id, Vault72h.SOURCE_NOTIFICATION, vaultMedia);
+        }
     }
 
     /** The same notification hook asks this for an auto reply: on, not paused, and with at least one reply written. */
@@ -2153,6 +2184,9 @@ public final class Settings {
 
     public static String labelKeptUnsent(String text, String messageId) {
         if (text == null) return text;
+        // A row in an open chat is the vault's second surface: with no send time to judge by, a row only ever
+        // fills in an entry the arrival capture already made, never starts one of its own.
+        if (wouldUse(Vault72h.KEY)) Vault72h.recordRow(text, messageId, null, 0, 0, -1, -1);
         if (wouldUse("keep_unsent") && isKeptUnsent(messageId)) return HiddenWords.mask("[unsent] " + text);
         return HiddenWords.mask(text);
     }
@@ -2185,7 +2219,7 @@ public final class Settings {
         boolean unsent = wouldUse("keep_unsent");
         // Reads the words kept by an earlier run, on its own thread, before the first row asks for them.
         if (unsent) UnsentWords.warmUp();
-        return unsent || HiddenWords.wanted();
+        return unsent || HiddenWords.wanted() || wouldUse(Vault72h.KEY);
     }
 
     /**
@@ -2258,6 +2292,11 @@ public final class Settings {
     private static String keptUnsentRowText(String text, String messageId, String threadingId, long timestamp, long senderId,
                                             int contentType, int contentSubtype) {
         try {
+            // The vault takes the row's words as they are shown, before any masking: a fresh row is a message
+            // arriving in the chat the user is looking at, which is the arrival the notification hook can miss.
+            if (wouldUse(Vault72h.KEY)) {
+                Vault72h.recordRow(text, messageId, threadingId, timestamp, senderId, contentType, contentSubtype);
+            }
             // Rows reach here for hidden words alone, and nothing below is this control's business then.
             if (!wouldUse("keep_unsent")) return text;
             String key = threadingId != null && !threadingId.isEmpty() ? threadingId : messageId;
@@ -2307,6 +2346,7 @@ public final class Settings {
     public static boolean unsentRecall(String messageId) {
         try {
             if (wouldUse(MessageLog.KEY)) MessageLog.markUnsent(messageId);
+            if (wouldUse(Vault72h.KEY)) Vault72h.markRecalled(messageId);
             if (messageId == null || messageId.isEmpty() || !wouldUse("keep_unsent")) return false;
             if (!ROW_TEXT.containsKey(messageId)) {
                 try {

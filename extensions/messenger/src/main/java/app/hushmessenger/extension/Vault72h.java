@@ -1,0 +1,978 @@
+package app.hushmessenger.extension;
+
+import android.content.ContentValues;
+import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteFullException;
+import android.database.sqlite.SQLiteOpenHelper;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import javax.crypto.Cipher;
+import javax.crypto.CipherInputStream;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
+/**
+ * The Temporary Vault: a local, encrypted archive of the messages this phone receives, each kept for exactly
+ * 72 hours from the moment it was first captured, so a message its sender unsends can still be read here until
+ * its time runs out.
+ *
+ * <p>Captures arrive from the two surfaces HushMessenger already hooks for other controls: the new-message
+ * notification constructor (a message arriving, in the background or not) and the chat rows' text getters (a
+ * message shown in the chat the user is looking at, encrypted chats included). Neither surface is the Android
+ * notification listener, and neither is the only one relied on. A recall reaches the vault through the same
+ * unsent-recall hook the message log uses, and only ever marks an entry that is already here: a message that
+ * was never captured gets no placeholder.
+ *
+ * <p>Storage is a SQLite database in Messenger's private files folder. Words, sender and chat names are sealed
+ * with an AES-GCM key the Android keystore holds; media files are sealed as a GCM stream under their own key,
+ * so a file of any size streams to disk without being held in memory and the vault sets no size limit of its
+ * own. Nothing is uploaded anywhere. Expiry is enforced on every read ({@code expires_at > now}) as well as by
+ * a purge that runs at Messenger start, every hour, and whenever the vault is opened, so an expired copy can't
+ * be opened even if the purge hasn't run yet.
+ *
+ * <p>View-once (ephemeral) media is never archived: the media scan in {@link MessageLogAttachment#foundForVault}
+ * skips those attachments, and a message whose only attachment is ephemeral is not recorded at all.
+ */
+public final class Vault72h {
+    private Vault72h() {}
+
+    static final String KEY = "vault_72h";
+    /** Keep a photo at the size it was sent, fetched as the message is captured. */
+    static final String KEEP_PHOTOS = "vault_72h_keep_photos";
+    /** Keep a video, fetched as the message is captured. */
+    static final String KEEP_VIDEOS = "vault_72h_keep_videos";
+    /** Keep a voice message's clip, fetched as the message is captured. */
+    static final String KEEP_VOICE = "vault_72h_keep_voice";
+
+    static final String DB_NAME = "hush_vault72h.db";
+    static final String MEDIA_DIR = "hush_vault_media";
+    static final String KEY_ALIAS = "hushmessenger_vault72h";
+    static final String MEDIA_KEY_ALIAS = "hushmessenger_vault72h_media";
+
+    /** How long every copy lives, from its first capture: 72 hours, no choices, no extensions. */
+    static final long TTL_MS = 72L * 60 * 60 * 1000;
+    /**
+     * A chat row whose send time is older than this is history being scrolled, not a message arriving, so it is
+     * only ever merged into an entry that already exists, never archived as if it had just arrived.
+     */
+    static final long ROW_ARRIVAL_WINDOW_MS = 10L * 60 * 1000;
+    /** Two captures of one message with no id to join them pair up within this long, like the message log's. */
+    static final long LOOSE_MERGE_WINDOW_MS = 2L * 60 * 1000;
+    static final long PURGE_PERIOD_MS = 60L * 60 * 1000;
+    static final long PURGE_DELAY_MS = 30_000;
+    static final int MAX_TEXT_CHARS = MessageLog.MAX_TEXT_CHARS;
+    static final int MAX_THREAD_CHARS = MessageLog.MAX_THREAD_CHARS;
+    static final int MAX_ID_CHARS = MessageLog.MAX_ID_CHARS;
+    static final int MAX_NAME_CHARS = MessageLog.MAX_NAME_CHARS;
+    private static final int IV_BYTES = 12;
+    private static final int TAG_BITS = 128;
+
+    // Kinds an entry can be. TEXT is a message with words of its own.
+    static final String KIND_TEXT = "TEXT";
+    static final String KIND_PHOTO = "PHOTO";
+    static final String KIND_VIDEO = "VIDEO";
+    static final String KIND_AUDIO = "AUDIO";
+    static final String KIND_STICKER = "STICKER";
+    static final String KIND_GIF = "GIF";
+    static final String KIND_FILE = "FILE";
+    static final String KIND_ATTACHMENT = "ATTACHMENT";
+
+    // What happened to an entry's media. STORED is only written once the sealed file is complete on disk.
+    static final String MEDIA_NONE = "NONE";
+    static final String MEDIA_PENDING = "PENDING";
+    static final String MEDIA_STORED = "STORED";
+    static final String MEDIA_UNAVAILABLE = "UNAVAILABLE";
+    static final String MEDIA_FAILED = "FAILED";
+    static final String MEDIA_STORAGE_FULL = "STORAGE_FULL";
+
+    static final String STATUS_ACTIVE = "ACTIVE";
+    static final String STATUS_RECALLED = "RECALLED";
+    static final String STATUS_EDITED = "EDITED";
+
+    static final String SOURCE_NOTIFICATION = "NOTIFICATION";
+    static final String SOURCE_ROW = "ROW";
+
+    /** What the vault's screen can narrow the list to. */
+    enum Filter { ALL, RECALLED, MEDIA, STICKERS_GIFS, AUDIO_FILES }
+
+    /** One archived message, with its sensitive fields already unsealed. */
+    public static final class Entry {
+        public final long rowId;
+        public final String msgId;
+        public final String thread;
+        public final String sender;
+        public final String chat;
+        public final long senderId;
+        public final String kind;
+        public final String text;
+        /** The words before an edit, empty unless {@link #status} is EDITED and the earlier words were captured. */
+        public final String editedFrom;
+        public final long sentAt;
+        public final long receivedAt;
+        public final long expiresAt;
+        public final String status;
+        public final String source;
+        public final String mediaName;
+        public final String mediaKind;
+        public final String mediaStatus;
+        public final long mediaBytes;
+
+        Entry(long rowId, String msgId, String thread, String sender, String chat, long senderId, String kind,
+              String text, String editedFrom, long sentAt, long receivedAt, long expiresAt, String status,
+              String source, String mediaName, String mediaKind, String mediaStatus, long mediaBytes) {
+            this.rowId = rowId;
+            this.msgId = msgId;
+            this.thread = thread;
+            this.sender = sender;
+            this.chat = chat;
+            this.senderId = senderId;
+            this.kind = kind;
+            this.text = text;
+            this.editedFrom = editedFrom;
+            this.sentAt = sentAt;
+            this.receivedAt = receivedAt;
+            this.expiresAt = expiresAt;
+            this.status = status;
+            this.source = source;
+            this.mediaName = mediaName;
+            this.mediaKind = mediaKind;
+            this.mediaStatus = mediaStatus;
+            this.mediaBytes = mediaBytes;
+        }
+
+        public boolean recalled() { return STATUS_RECALLED.equals(status); }
+        public boolean hasMedia() { return MEDIA_STORED.equals(mediaStatus) && !mediaName.isEmpty(); }
+        /** Milliseconds of life left at [now]; never negative in a list, since expired entries are filtered out. */
+        public long remainingMs(long now) { return Math.max(0, expiresAt - now); }
+    }
+
+    /** Totals for the vault's statistics row. Sizes are the sealed files' sizes on disk. */
+    static final class Stats {
+        final int entries;
+        final int recalled;
+        final int mediaStored;
+        final long mediaBytes;
+        final long databaseBytes;
+        final long nextExpiryAt;
+        Stats(int entries, int recalled, int mediaStored, long mediaBytes, long databaseBytes, long nextExpiryAt) {
+            this.entries = entries;
+            this.recalled = recalled;
+            this.mediaStored = mediaStored;
+            this.mediaBytes = mediaBytes;
+            this.databaseBytes = databaseBytes;
+            this.nextExpiryAt = nextExpiryAt;
+        }
+    }
+
+    // --- Crypto ---------------------------------------------------------------------------------------------
+
+    /** Seals the small fields (words, names). Tests swap in a software key, as the message log's tests do. */
+    static volatile MessageLog.Vault vault;
+
+    static MessageLog.Vault vault() {
+        MessageLog.Vault current = vault;
+        if (current == null) {
+            synchronized (LOCK) {
+                if (vault == null) vault = new MessageLog.KeystoreVault(KEY_ALIAS);
+                current = vault;
+            }
+        }
+        return current;
+    }
+
+    /** Gives the key media streams are sealed with, and forgets it. Tests swap in a software key. */
+    interface MediaKeys {
+        SecretKey key() throws Exception;
+        void forget() throws Exception;
+    }
+
+    static volatile MediaKeys mediaKeys;
+
+    static MediaKeys mediaKeys() {
+        MediaKeys current = mediaKeys;
+        if (current == null) {
+            synchronized (LOCK) {
+                if (mediaKeys == null) mediaKeys = new MediaKeys() {
+                    @Override public SecretKey key() throws Exception { return keystoreKey(MEDIA_KEY_ALIAS); }
+                    @Override public void forget() throws Exception { forgetKey(MEDIA_KEY_ALIAS); }
+                };
+                current = mediaKeys;
+            }
+        }
+        return current;
+    }
+
+    private static SecretKey keystoreKey(String alias) throws Exception {
+        KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+        store.load(null);
+        KeyStore.Entry entry = store.getEntry(alias, null);
+        if (entry instanceof KeyStore.SecretKeyEntry) return ((KeyStore.SecretKeyEntry) entry).getSecretKey();
+        KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+        generator.init(new KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .build());
+        return generator.generateKey();
+    }
+
+    private static void forgetKey(String alias) throws Exception {
+        KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+        store.load(null);
+        if (store.containsAlias(alias)) store.deleteEntry(alias);
+    }
+
+    private static byte[] sealText(String value) throws Exception {
+        if (value == null || value.isEmpty()) return null;
+        return vault().seal(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String openText(byte[] blob) {
+        if (blob == null || blob.length == 0) return "";
+        try {
+            return new String(vault().open(blob), StandardCharsets.UTF_8);
+        } catch (Exception unreadable) {
+            // A field whose key is gone reads as empty; the entry itself still lists, with its times and status.
+            return "";
+        }
+    }
+
+    /** Streams [in] into [file], GCM-sealed: a 12-byte nonce, then the ciphertext. Returns the bytes sealed. */
+    static long sealStream(InputStream in, File file) throws Exception {
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, mediaKeys().key());
+        byte[] iv = cipher.getIV();
+        long written = 0;
+        // The cipher is driven by hand rather than through a CipherOutputStream, whose close() would close the
+        // file first and leave nothing to sync: the tag is written, the file synced, and only then closed.
+        try (FileOutputStream out = new FileOutputStream(file)) {
+            out.write(iv);
+            byte[] buffer = new byte[16 * 1024];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                byte[] sealed = cipher.update(buffer, 0, read);
+                if (sealed != null) out.write(sealed);
+                written += read;
+            }
+            byte[] tail = cipher.doFinal();
+            if (tail != null) out.write(tail);
+            out.flush();
+            out.getFD().sync();
+        }
+        return written;
+    }
+
+    /** The plain bytes sealed in [file], streamed back out. Null when the file is gone. */
+    static InputStream openStream(File file) throws Exception {
+        if (file == null || !file.isFile()) return null;
+        FileInputStream raw = new FileInputStream(file);
+        byte[] iv = new byte[IV_BYTES];
+        int got = 0;
+        while (got < IV_BYTES) {
+            int read = raw.read(iv, got, IV_BYTES - got);
+            if (read < 0) { raw.close(); return null; }
+            got += read;
+        }
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.DECRYPT_MODE, mediaKeys().key(), new GCMParameterSpec(TAG_BITS, iv));
+        return new CipherInputStream(raw, cipher);
+    }
+
+    /** The whole media file for [entry], unsealed. For pictures and tests; video and audio play from a cache file. */
+    static byte[] openMedia(Context context, Entry entry) {
+        if (context == null || entry == null || !entry.hasMedia()) return null;
+        File file = mediaFile(context, entry.mediaName);
+        try (InputStream in = openStream(file)) {
+            if (in == null) return null;
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[16 * 1024];
+            int read;
+            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
+            return out.toByteArray();
+        } catch (Exception unreadable) {
+            Settings.hookFailedPrivately(KEY, "Can't open a vault media file", unreadable);
+            return null;
+        }
+    }
+
+    /**
+     * Unseals [entry]'s media into the cache folder so a player can open it, and returns that file. The copy is a
+     * plain file in the app's own cache, deleted by Android with the cache and by the next purge at the latest.
+     */
+    static File mediaCacheFile(Context context, Entry entry) {
+        if (context == null || entry == null || !entry.hasMedia()) return null;
+        String extension = KIND_AUDIO.equals(entry.kind) ? ".m4a" : KIND_VIDEO.equals(entry.kind) ? ".mp4" : ".bin";
+        File out = new File(context.getCacheDir(), "vault_" + entry.mediaName + extension);
+        if (out.isFile() && out.length() > 0) return out;
+        try (InputStream in = openStream(mediaFile(context, entry.mediaName))) {
+            if (in == null) return null;
+            try (FileOutputStream sink = new FileOutputStream(out)) {
+                byte[] buffer = new byte[16 * 1024];
+                int read;
+                while ((read = in.read(buffer)) != -1) sink.write(buffer, 0, read);
+            }
+            return out;
+        } catch (Exception unreadable) {
+            out.delete();
+            Settings.hookFailedPrivately(KEY, "Can't prepare a vault media file to play", unreadable);
+            return null;
+        }
+    }
+
+    static File mediaFile(Context context, String name) {
+        if (context == null || name == null || !name.matches("[0-9a-f]{64}")) return null;
+        return new File(new File(context.getFilesDir(), MEDIA_DIR), name);
+    }
+
+    // --- Database -------------------------------------------------------------------------------------------
+
+    private static final Object LOCK = new Object();
+    private static Helper helper;
+
+    private static final class Helper extends SQLiteOpenHelper {
+        Helper(Context context) { super(context.getApplicationContext(), DB_NAME, null, 1); }
+
+        @Override public void onCreate(SQLiteDatabase db) {
+            db.execSQL("CREATE TABLE entries ("
+                + "row_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "dedup TEXT UNIQUE NOT NULL,"
+                + "msg_id TEXT NOT NULL DEFAULT '',"
+                + "thread TEXT NOT NULL DEFAULT '',"
+                + "sender BLOB, chat BLOB, sender_id INTEGER NOT NULL DEFAULT 0,"
+                + "kind TEXT NOT NULL,"
+                + "body BLOB, edited_from BLOB,"
+                + "sent_at INTEGER NOT NULL, received_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,"
+                + "status TEXT NOT NULL DEFAULT 'ACTIVE', source TEXT NOT NULL DEFAULT '',"
+                + "media_name TEXT NOT NULL DEFAULT '', media_kind TEXT NOT NULL DEFAULT '',"
+                + "media_status TEXT NOT NULL DEFAULT 'NONE', media_bytes INTEGER NOT NULL DEFAULT 0)");
+            db.execSQL("CREATE INDEX idx_vault_expires ON entries(expires_at)");
+            db.execSQL("CREATE INDEX idx_vault_msg ON entries(msg_id)");
+        }
+
+        @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+            // Version 1 is the first; a future version migrates here rather than dropping the archive.
+        }
+    }
+
+    private static SQLiteDatabase db(Context context) {
+        synchronized (LOCK) {
+            if (helper == null) helper = new Helper(context);
+            return helper.getWritableDatabase();
+        }
+    }
+
+    /** Drops the cached helper. Tests call it between cases; production never needs to. */
+    static void resetForTests() {
+        synchronized (LOCK) {
+            if (helper != null) { helper.close(); helper = null; }
+        }
+    }
+
+    // --- Capture --------------------------------------------------------------------------------------------
+
+    private static final ScheduledExecutorService WRITER = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "HushVault");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private static final ThreadPoolExecutor MEDIA = new ThreadPoolExecutor(0, 1, 30, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(32), runnable -> {
+            Thread thread = new Thread(runnable, "HushVaultMedia");
+            thread.setDaemon(true);
+            return thread;
+        });
+    private static final AtomicBoolean PURGE_SCHEDULED = new AtomicBoolean();
+
+    /**
+     * A capture from one of the hooks. Only queues the record and returns; the write and any media fetch happen
+     * on the vault's own threads, never on Messenger's message path.
+     */
+    static void record(String text, String thread, String id, String source, MessageLogAttachment.Found found) {
+        final String keptText = text, keptThread = thread, keptId = id, keptSource = source;
+        final MessageLogAttachment.Found keptFound = found;
+        try {
+            // The write waits a moment, as the message log's does, so the notification the sender's name is
+            // read from has been posted by the time the entry is written.
+            WRITER.schedule(() -> recordNow(keptText, keptThread, keptId, keptSource, keptFound,
+                0, 0, "", "", System.currentTimeMillis()), MessageLog.NAME_DELAY_MS, TimeUnit.MILLISECONDS);
+        } catch (RuntimeException rejected) {
+            Settings.hookFailedPrivately(KEY, "Can't queue a message for the vault", rejected);
+        }
+    }
+
+    /** Captures a row surface already queued in this minute, by row key and a digest of its words. */
+    private static final java.util.LinkedHashMap<String, Long> RECENT_ROWS = new java.util.LinkedHashMap<>();
+
+    /** A capture from a chat row, which carries the message's own send time and sender. See {@link #recordRowNow}. */
+    static void recordRow(String text, String msgId, String threadingId, long sentAt, long senderId,
+                          int contentType, int contentSubtype) {
+        // A row is rendered again at every scroll and redraw, so the same words under the same key queue once a
+        // minute at most; the database merge would only have repeated what the first capture wrote.
+        String key = (msgId != null && !msgId.isEmpty() ? msgId : threadingId == null ? "" : threadingId)
+            + '\u0001' + MessageLog.digest(text == null ? "" : text);
+        long now = System.currentTimeMillis();
+        synchronized (RECENT_ROWS) {
+            RECENT_ROWS.values().removeIf(at -> now - at > 60_000 || at > now);
+            Long seen = RECENT_ROWS.get(key);
+            if (seen != null && now - seen <= 60_000) return;
+            RECENT_ROWS.put(key, now);
+            while (RECENT_ROWS.size() > 512) {
+                java.util.Iterator<String> oldest = RECENT_ROWS.keySet().iterator();
+                oldest.next();
+                oldest.remove();
+            }
+        }
+        try {
+            WRITER.execute(() -> recordRowNow(text, msgId, threadingId, sentAt, senderId, contentType, contentSubtype,
+                System.currentTimeMillis()));
+        } catch (RuntimeException rejected) {
+            Settings.hookFailedPrivately(KEY, "Can't queue a chat row for the vault", rejected);
+        }
+    }
+
+    /**
+     * Writes one capture on the calling thread and returns its row id, or -1 when nothing was written (a duplicate
+     * that changed nothing still returns the existing row's id). Tests call this directly.
+     *
+     * <p>[found] is the message's media as the notification hook read it, or null. Media is fetched afterwards,
+     * off this thread, and only when the vault's own keep switch for its kind is on.
+     */
+    static long recordNow(String text, String thread, String id, String source,
+                          MessageLogAttachment.Found found, long sentAt, long senderId,
+                          String sender, String chat, long now) {
+        Context context = Settings.appContext;
+        if (context == null) return -1;
+        if (found != null && MessageLogAttachment.EPHEMERAL.equals(found.kind)) return -1;
+        boolean attachment = text == null;
+        String words = attachment ? "" : MessageLog.clip(text, MAX_TEXT_CHARS);
+        String keptThread = MessageLog.clip(thread == null ? "" : thread, MAX_THREAD_CHARS);
+        String keptId = MessageLog.clip(id == null ? "" : id, MAX_ID_CHARS);
+        String kind = kindOf(words, found, attachment);
+        // The notification hook hands over no names; the message log reads them off the notification that
+        // showed the message, and so does the vault, the same way, without touching the log's own copies.
+        String keptSender = sender == null ? "" : sender;
+        String keptChat = chat == null ? "" : chat;
+        if (keptSender.isEmpty() && SOURCE_NOTIFICATION.equals(source) && !keptThread.isEmpty()) {
+            try {
+                android.service.notification.StatusBarNotification shown = ChatNotifications.find(context, keptThread);
+                if (shown != null) {
+                    String named = ChatNotifications.sender(shown.getNotification(), words, keptThread);
+                    String group = ChatNotifications.conversation(shown.getNotification());
+                    if (named != null) keptSender = MessageLog.clip(named, MAX_NAME_CHARS);
+                    if (group != null && !group.equals(named)) keptChat = MessageLog.clip(group, MAX_NAME_CHARS);
+                }
+            } catch (RuntimeException unreadable) {
+                // The entry is still archived, without a name.
+            }
+        }
+        try {
+            synchronized (LOCK) {
+                SQLiteDatabase db = db(context);
+                purgeLocked(context, db, now);
+                long rowId = mergeOrInsertLocked(db, keptId, keptThread, keptSender, keptChat, senderId, kind, words,
+                    sentAt > 0 ? sentAt : now, now, source, found);
+                if (rowId >= 0 && found != null) {
+                    String current = mediaStatusLocked(db, rowId);
+                    if (!MEDIA_STORED.equals(current)) {
+                        if (mediaWanted(found.kind)) {
+                            updateMediaStatusLocked(db, rowId, MEDIA_PENDING, "", found.kind, 0);
+                            fetchMedia(context, rowId, keptThread, keptId, found);
+                        } else if (MEDIA_PENDING.equals(current)) {
+                            // The vault's keep switch for this kind is off, so nothing will be fetched.
+                            updateMediaStatusLocked(db, rowId, MEDIA_NONE, "", found.kind, 0);
+                        }
+                    }
+                }
+                if (rowId >= 0) Settings.activeAt.put(KEY, now);
+                return rowId;
+            }
+        } catch (SQLiteFullException full) {
+            Settings.hookFailedPrivately(KEY, "The phone's storage is full, so a message couldn't be archived", full);
+            return -1;
+        } catch (Throwable failure) {
+            Settings.hookFailedPrivately(KEY, "Can't archive a message in the vault", failure);
+            return -1;
+        }
+    }
+
+    /**
+     * A row's capture. A row is how an open chat shows a message, so a fresh one is an arrival; an old one is
+     * history. History only ever fills an entry that already exists (by id, or by threading id), because
+     * archiving it as new would invent an arrival time it never had. The placeholder row Messenger swaps in for
+     * an unsent encrypted message (type 5, subtype 1, the message log's constants) is not a capture either.
+     */
+    static long recordRowNow(String text, String msgId, String threadingId, long sentAt, long senderId,
+                             int contentType, int contentSubtype, long now) {
+        if (text == null || text.isEmpty()) return -1;
+        if (contentType == Settings.UNSENT_PLACEHOLDER_TYPE && contentSubtype == Settings.UNSENT_PLACEHOLDER_SUBTYPE) return -1;
+        Context context = Settings.appContext;
+        if (context == null) return -1;
+        String keptId = MessageLog.clip(msgId == null ? "" : msgId, MAX_ID_CHARS);
+        String keptThreading = MessageLog.clip(threadingId == null ? "" : threadingId, MAX_ID_CHARS);
+        boolean fresh = sentAt > 0 && now - sentAt <= ROW_ARRIVAL_WINDOW_MS && sentAt <= now + ROW_ARRIVAL_WINDOW_MS;
+        try {
+            synchronized (LOCK) {
+                SQLiteDatabase db = db(context);
+                purgeLocked(context, db, now);
+                // Rows key an entry by the message id when they have one, else by the threading id, which is how
+                // the row surface itself tells one message from another.
+                String key = !keptId.isEmpty() ? keptId : keptThreading;
+                if (key.isEmpty()) return -1;
+                if (!fresh) {
+                    Cursor existing = db.query("entries", new String[] {"row_id"},
+                        "msg_id=? OR dedup=?", new String[] {key, "m:" + key}, null, null, null, "1");
+                    try {
+                        if (!existing.moveToFirst()) return -1;
+                    } finally { existing.close(); }
+                }
+                long rowId = mergeOrInsertLocked(db, keptId.isEmpty() ? keptThreading : keptId, "", "", "",
+                    senderId, KIND_TEXT, MessageLog.clip(text, MAX_TEXT_CHARS), sentAt > 0 ? sentAt : now, now,
+                    SOURCE_ROW, null);
+                if (rowId >= 0) Settings.activeAt.put(KEY, now);
+                return rowId;
+            }
+        } catch (SQLiteFullException full) {
+            Settings.hookFailedPrivately(KEY, "The phone's storage is full, so a message couldn't be archived", full);
+            return -1;
+        } catch (Throwable failure) {
+            Settings.hookFailedPrivately(KEY, "Can't archive a chat row in the vault", failure);
+            return -1;
+        }
+    }
+
+    /** What kind of entry a capture is, from its media when it has some and from Messenger's own words when not. */
+    static String kindOf(String words, MessageLogAttachment.Found found, boolean attachment) {
+        if (found != null) {
+            if (MessageLogAttachment.AUDIO.equals(found.kind)) return KIND_AUDIO;
+            if (MessageLogAttachment.VIDEO.equals(found.kind)) return KIND_VIDEO;
+            return KIND_PHOTO;
+        }
+        if (!attachment) return KIND_TEXT;
+        String said = words == null ? "" : words.toLowerCase(java.util.Locale.ROOT);
+        if (said.contains("sticker")) return KIND_STICKER;
+        if (said.contains("gif")) return KIND_GIF;
+        if (said.contains("voice") || said.contains("audio")) return KIND_AUDIO;
+        if (said.contains("video")) return KIND_VIDEO;
+        if (said.contains("photo") || said.contains("image")) return KIND_PHOTO;
+        if (said.contains("file")) return KIND_FILE;
+        return KIND_ATTACHMENT;
+    }
+
+    /** Whether the vault's own keep switch for this media kind is on. The message log's switches don't decide. */
+    static boolean mediaWanted(String foundKind) {
+        android.content.SharedPreferences prefs = Settings.preferences;
+        if (prefs == null) return false;
+        String key = MessageLogAttachment.AUDIO.equals(foundKind) ? KEEP_VOICE
+            : MessageLogAttachment.VIDEO.equals(foundKind) ? KEEP_VIDEOS : KEEP_PHOTOS;
+        return prefs.getBoolean(key, false);
+    }
+
+    /**
+     * Inserts the capture, or merges it into the entry it belongs to. Matching is by stable message id first,
+     * then, for word captures with no id, by the same thread and words within {@link #LOOSE_MERGE_WINDOW_MS}.
+     * A merge never moves the first capture's times (the 72 hours run from the first capture), never overwrites
+     * a recall, fills only empty fields, and treats different words under one id as an edit.
+     */
+    private static long mergeOrInsertLocked(SQLiteDatabase db, String msgId, String thread, String sender,
+                                            String chat, long senderId, String kind, String words,
+                                            long sentAt, long now, String source,
+                                            MessageLogAttachment.Found found) throws Exception {
+        String dedup = !msgId.isEmpty() ? "m:" + msgId : "t:" + MessageLog.digest(thread + '\u0001' + words + '\u0001' + (sentAt / LOOSE_MERGE_WINDOW_MS));
+        long existing = -1;
+        Cursor byDedup = db.query("entries", new String[] {"row_id"}, "dedup=?", new String[] {dedup}, null, null, null, "1");
+        try { if (byDedup.moveToFirst()) existing = byDedup.getLong(0); } finally { byDedup.close(); }
+        if (existing < 0 && msgId.isEmpty() && KIND_TEXT.equals(kind) && !words.isEmpty()) {
+            Cursor loose = db.query("entries", new String[] {"row_id", "body"},
+                "thread=? AND kind=? AND received_at>=? AND expires_at>?",
+                new String[] {thread, KIND_TEXT, String.valueOf(now - LOOSE_MERGE_WINDOW_MS), String.valueOf(now)},
+                null, null, "received_at DESC");
+            try {
+                while (loose.moveToNext()) {
+                    if (words.equals(openText(loose.getBlob(1)))) { existing = loose.getLong(0); break; }
+                }
+            } finally { loose.close(); }
+        }
+        if (existing < 0) {
+            ContentValues values = new ContentValues();
+            values.put("dedup", dedup);
+            values.put("msg_id", msgId);
+            values.put("thread", thread);
+            values.put("sender", sealText(sender));
+            values.put("chat", sealText(chat));
+            values.put("sender_id", senderId);
+            values.put("kind", kind);
+            values.put("body", sealText(words));
+            values.put("sent_at", sentAt);
+            values.put("received_at", now);
+            values.put("expires_at", now + TTL_MS);
+            values.put("status", STATUS_ACTIVE);
+            values.put("source", source);
+            values.put("media_status", found != null ? MEDIA_PENDING : MEDIA_NONE);
+            return db.insertOrThrow("entries", null, values);
+        }
+        // Merge into the existing entry.
+        Cursor row = db.query("entries",
+            new String[] {"body", "edited_from", "status", "sender", "chat", "thread", "kind", "media_status"},
+            "row_id=?", new String[] {String.valueOf(existing)}, null, null, null, "1");
+        try {
+            if (!row.moveToFirst()) return existing;
+            String oldWords = openText(row.getBlob(0));
+            String status = row.getString(2);
+            ContentValues values = new ContentValues();
+            if (!words.isEmpty() && !oldWords.isEmpty() && !words.equals(oldWords) && !STATUS_RECALLED.equals(status)) {
+                values.put("edited_from", sealText(oldWords));
+                values.put("body", sealText(words));
+                values.put("status", STATUS_EDITED);
+            } else if (!words.isEmpty() && oldWords.isEmpty()) {
+                values.put("body", sealText(words));
+            }
+            if (row.getBlob(3) == null && sender != null && !sender.isEmpty()) values.put("sender", sealText(sender));
+            if (row.getBlob(4) == null && chat != null && !chat.isEmpty()) values.put("chat", sealText(chat));
+            if ((row.getString(5) == null || row.getString(5).isEmpty()) && !thread.isEmpty()) values.put("thread", thread);
+            if (KIND_TEXT.equals(row.getString(6)) && !KIND_TEXT.equals(kind)) values.put("kind", kind);
+            if (values.size() > 0) db.update("entries", values, "row_id=?", new String[] {String.valueOf(existing)});
+            return existing;
+        } finally { row.close(); }
+    }
+
+    private static String mediaStatusLocked(SQLiteDatabase db, long rowId) {
+        Cursor row = db.query("entries", new String[] {"media_status"}, "row_id=?",
+            new String[] {String.valueOf(rowId)}, null, null, null, "1");
+        try {
+            return row.moveToFirst() ? row.getString(0) : MEDIA_NONE;
+        } finally { row.close(); }
+    }
+
+    private static void updateMediaStatusLocked(SQLiteDatabase db, long rowId, String status, String name,
+                                                String kind, long bytes) {
+        ContentValues values = new ContentValues();
+        values.put("media_status", status);
+        if (name != null && !name.isEmpty()) values.put("media_name", name);
+        if (kind != null && !kind.isEmpty()) values.put("media_kind", kind);
+        if (bytes > 0) values.put("media_bytes", bytes);
+        db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
+    }
+
+    private static void setMediaStatus(Context context, long rowId, String status, String name, String kind, long bytes) {
+        synchronized (LOCK) {
+            try {
+                updateMediaStatusLocked(db(context), rowId, status, name, kind, bytes);
+            } catch (Throwable failure) {
+                Settings.hookFailedPrivately(KEY, "Can't record a vault media result", failure);
+            }
+        }
+    }
+
+    /**
+     * Fetches a captured message's media on the media thread and seals it into the vault. No size limit is
+     * imposed: the download streams through the cipher to disk. Any failure leaves the entry's text intact and
+     * its media status saying exactly what happened.
+     */
+    private static void fetchMedia(Context context, long rowId, String thread, String id, MessageLogAttachment.Found found) {
+        try {
+            MEDIA.execute(() -> {
+                String name = MessageLog.digest(thread + '\u0000' + id + '\u0000' + found.kind);
+                File file = mediaFile(context, name);
+                if (file != null && file.isFile() && file.length() > 0) {
+                    setMediaStatus(context, rowId, MEDIA_STORED, name, found.kind, file.length());
+                    return;
+                }
+                String address = VaultMedia.pick(found);
+                if (address == null) {
+                    setMediaStatus(context, rowId, MEDIA_UNAVAILABLE, "", found.kind, 0);
+                    return;
+                }
+                File dir = new File(context.getFilesDir(), MEDIA_DIR);
+                if (!dir.isDirectory() && !dir.mkdirs()) {
+                    setMediaStatus(context, rowId, MEDIA_FAILED, "", found.kind, 0);
+                    return;
+                }
+                File target = new File(dir, name);
+                try (InputStream in = VaultMedia.open(address)) {
+                    if (in == null) {
+                        setMediaStatus(context, rowId, MEDIA_UNAVAILABLE, "", found.kind, 0);
+                        return;
+                    }
+                    long plain = sealStream(in, target);
+                    if (plain <= 0) {
+                        target.delete();
+                        setMediaStatus(context, rowId, MEDIA_UNAVAILABLE, "", found.kind, 0);
+                        return;
+                    }
+                    setMediaStatus(context, rowId, MEDIA_STORED, name, found.kind, target.length());
+                } catch (Throwable failure) {
+                    target.delete();
+                    setMediaStatus(context, rowId, isStorageFull(failure) ? MEDIA_STORAGE_FULL : MEDIA_FAILED,
+                        "", found.kind, 0);
+                    Settings.hookFailedPrivately(KEY, "Can't keep a message's media in the vault", failure);
+                }
+            });
+        } catch (RuntimeException rejected) {
+            setMediaStatus(context, rowId, MEDIA_FAILED, "", found.kind, 0);
+        }
+    }
+
+    /** Whether a failure chain says the disk is full (ENOSPC), as opposed to a network or format failure. */
+    static boolean isStorageFull(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof android.system.ErrnoException
+                && ((android.system.ErrnoException) cause).errno == android.system.OsConstants.ENOSPC) return true;
+            String message = cause.getMessage();
+            if (message != null && (message.contains("No space left") || message.contains("ENOSPC"))) return true;
+        }
+        return false;
+    }
+
+    // --- Recalls --------------------------------------------------------------------------------------------
+
+    /** A recall the hooks saw. Queued like a capture; the mark itself never creates an entry. */
+    static void markRecalled(String id) {
+        if (id == null || id.isEmpty()) return;
+        String kept = MessageLog.clip(id, MAX_ID_CHARS);
+        try {
+            WRITER.execute(() -> markRecalledNow(kept));
+        } catch (RuntimeException rejected) {
+            Settings.hookFailedPrivately(KEY, "Can't queue a recall for the vault", rejected);
+        }
+    }
+
+    /** Marks the entry for [id] Recalled on the calling thread. Returns whether an entry was there to mark. */
+    static boolean markRecalledNow(String id) {
+        Context context = Settings.appContext;
+        if (context == null || id == null || id.isEmpty()) return false;
+        synchronized (LOCK) {
+            try {
+                ContentValues values = new ContentValues();
+                values.put("status", STATUS_RECALLED);
+                int changed = db(context).update("entries", values, "msg_id=? AND status!=?",
+                    new String[] {id, STATUS_RECALLED});
+                return changed > 0;
+            } catch (Throwable failure) {
+                Settings.hookFailedPrivately(KEY, "Can't mark a recalled message in the vault", failure);
+                return false;
+            }
+        }
+    }
+
+    // --- Reads ----------------------------------------------------------------------------------------------
+
+    private static final String[] COLUMNS = {"row_id", "msg_id", "thread", "sender", "chat", "sender_id", "kind",
+        "body", "edited_from", "sent_at", "received_at", "expires_at", "status", "source", "media_name",
+        "media_kind", "media_status", "media_bytes"};
+
+    private static Entry readEntry(Cursor row) {
+        return new Entry(row.getLong(0), row.getString(1), row.getString(2) == null ? "" : row.getString(2),
+            openText(row.getBlob(3)), openText(row.getBlob(4)), row.getLong(5), row.getString(6),
+            openText(row.getBlob(7)), openText(row.getBlob(8)), row.getLong(9), row.getLong(10), row.getLong(11),
+            row.getString(12), row.getString(13), row.getString(14), row.getString(15), row.getString(16),
+            row.getLong(17));
+    }
+
+    /**
+     * The vault's entries, newest first, narrowed by [filter], by [thread] when it isn't null, and by [query]
+     * matching the words, sender or chat. Expired entries are purged first and are never returned, whatever the
+     * purge schedule has or hasn't done.
+     */
+    static List<Entry> entries(Filter filter, String thread, String query, long now) {
+        Context context = Settings.appContext;
+        List<Entry> out = new ArrayList<>();
+        if (context == null) return out;
+        synchronized (LOCK) {
+            try {
+                SQLiteDatabase db = db(context);
+                purgeLocked(context, db, now);
+                StringBuilder where = new StringBuilder("expires_at>?");
+                List<String> args = new ArrayList<>();
+                args.add(String.valueOf(now));
+                if (filter == Filter.RECALLED) where.append(" AND status='").append(STATUS_RECALLED).append("'");
+                else if (filter == Filter.MEDIA) where.append(" AND kind IN ('").append(KIND_PHOTO).append("','").append(KIND_VIDEO).append("')");
+                else if (filter == Filter.STICKERS_GIFS) where.append(" AND kind IN ('").append(KIND_STICKER).append("','").append(KIND_GIF).append("')");
+                else if (filter == Filter.AUDIO_FILES) where.append(" AND kind IN ('").append(KIND_AUDIO).append("','").append(KIND_FILE).append("')");
+                if (thread != null) { where.append(" AND thread=?"); args.add(thread); }
+                Cursor rows = db.query("entries", COLUMNS, where.toString(),
+                    args.toArray(new String[0]), null, null, "received_at DESC");
+                try {
+                    String needle = query == null ? "" : query.trim().toLowerCase(java.util.Locale.ROOT);
+                    while (rows.moveToNext()) {
+                        Entry entry = readEntry(rows);
+                        if (!needle.isEmpty()
+                            && !entry.text.toLowerCase(java.util.Locale.ROOT).contains(needle)
+                            && !entry.sender.toLowerCase(java.util.Locale.ROOT).contains(needle)
+                            && !entry.chat.toLowerCase(java.util.Locale.ROOT).contains(needle)) continue;
+                        out.add(entry);
+                    }
+                } finally { rows.close(); }
+            } catch (Throwable failure) {
+                Settings.hookFailedPrivately(KEY, "Can't read the vault", failure);
+            }
+        }
+        return out;
+    }
+
+    /** The chats that have live entries, as (thread, chat name, count) rows, busiest first. */
+    static List<String[]> conversations(long now) {
+        Context context = Settings.appContext;
+        List<String[]> out = new ArrayList<>();
+        if (context == null) return out;
+        synchronized (LOCK) {
+            try {
+                SQLiteDatabase db = db(context);
+                purgeLocked(context, db, now);
+                Cursor rows = db.query("entries", new String[] {"thread", "chat", "COUNT(*)"},
+                    "expires_at>?", new String[] {String.valueOf(now)}, "thread", null, "COUNT(*) DESC");
+                try {
+                    while (rows.moveToNext()) {
+                        out.add(new String[] {rows.getString(0) == null ? "" : rows.getString(0),
+                            openText(rows.getBlob(1)), String.valueOf(rows.getLong(2))});
+                    }
+                } finally { rows.close(); }
+            } catch (Throwable failure) {
+                Settings.hookFailedPrivately(KEY, "Can't list the vault's chats", failure);
+            }
+        }
+        return out;
+    }
+
+    static Stats stats(long now) {
+        Context context = Settings.appContext;
+        if (context == null) return new Stats(0, 0, 0, 0, 0, 0);
+        synchronized (LOCK) {
+            try {
+                SQLiteDatabase db = db(context);
+                purgeLocked(context, db, now);
+                int entries = 0, recalled = 0, media = 0;
+                long mediaBytes = 0, next = 0;
+                Cursor rows = db.query("entries",
+                    new String[] {"COUNT(*)", "SUM(status='RECALLED')", "SUM(media_status='STORED')",
+                        "COALESCE(SUM(media_bytes),0)", "COALESCE(MIN(expires_at),0)"},
+                    "expires_at>?", new String[] {String.valueOf(now)}, null, null, null);
+                try {
+                    if (rows.moveToFirst()) {
+                        entries = rows.getInt(0);
+                        recalled = rows.getInt(1);
+                        media = rows.getInt(2);
+                        mediaBytes = rows.getLong(3);
+                        next = rows.getLong(4);
+                    }
+                } finally { rows.close(); }
+                File dbFile = context.getDatabasePath(DB_NAME);
+                return new Stats(entries, recalled, media, mediaBytes, dbFile == null ? 0 : dbFile.length(), next);
+            } catch (Throwable failure) {
+                Settings.hookFailedPrivately(KEY, "Can't measure the vault", failure);
+                return new Stats(0, 0, 0, 0, 0, 0);
+            }
+        }
+    }
+
+    // --- Expiry and clearing ----------------------------------------------------------------------------------
+
+    /** Starts the hourly purge once per process. Settings calls it at startup when the control is installed. */
+    static void scheduleExpiry() {
+        if (PURGE_SCHEDULED.compareAndSet(false, true)) {
+            WRITER.scheduleWithFixedDelay(Vault72h::purgeNow, PURGE_DELAY_MS, PURGE_PERIOD_MS, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    static void purgeNow() {
+        Context context = Settings.appContext;
+        if (context == null) return;
+        synchronized (LOCK) {
+            try {
+                purgeLocked(context, db(context), System.currentTimeMillis());
+            } catch (Throwable failure) {
+                // Caught here because a periodic task that throws is never run again.
+                Settings.hookFailedPrivately(KEY, "Can't expire old messages in the vault", failure);
+            }
+        }
+    }
+
+    /** Deletes expired rows and their media files. The caller holds {@link #LOCK}. Returns how many went. */
+    static int purgeLocked(Context context, SQLiteDatabase db, long now) {
+        List<String> media = new ArrayList<>();
+        Cursor rows = db.query("entries", new String[] {"media_name"}, "expires_at<=?",
+            new String[] {String.valueOf(now)}, null, null, null);
+        try {
+            while (rows.moveToNext()) if (rows.getString(0) != null && !rows.getString(0).isEmpty()) media.add(rows.getString(0));
+        } finally { rows.close(); }
+        int removed = db.delete("entries", "expires_at<=?", new String[] {String.valueOf(now)});
+        for (String name : media) {
+            File file = mediaFile(context, name);
+            if (file != null && file.exists() && !file.delete()) {
+                Settings.hookFailedPrivately(KEY, "Can't delete an expired vault media file", new IOException("delete failed: " + name));
+            }
+        }
+        return removed;
+    }
+
+    /** Deletes the whole archive at once: every row, every media file, and both keys, so nothing can be reopened. */
+    static boolean clearAll() {
+        Context context = Settings.appContext;
+        if (context == null) return false;
+        synchronized (LOCK) {
+            boolean cleared = true;
+            try {
+                db(context).delete("entries", null, null);
+            } catch (Throwable failure) {
+                cleared = false;
+                Settings.hookFailedPrivately(KEY, "Can't clear the vault", failure);
+            }
+            File dir = new File(context.getFilesDir(), MEDIA_DIR);
+            String[] names = dir.list();
+            if (names != null) for (String name : names) cleared &= new File(dir, name).delete();
+            if (dir.exists()) cleared &= dir.delete();
+            try { vault().forget(); } catch (Throwable failure) { cleared = false; }
+            // Through the seam, so a swapped-in key is forgotten its own way; one never materialised in this
+            // process still has its keystore entry dropped directly.
+            try {
+                MediaKeys keys = mediaKeys;
+                if (keys != null) keys.forget();
+                else forgetKey(MEDIA_KEY_ALIAS);
+            } catch (Throwable failure) { cleared = false; }
+            vault = null;
+            mediaKeys = null;
+            return cleared;
+        }
+    }
+
+    /**
+     * A repatch without this control leaves the database and media behind, and the settings screen can't clear
+     * them any more. Settings calls this at startup then, so the vault doesn't outlive the control.
+     */
+    static java.util.concurrent.Future<?> dropLeftovers(Context context) {
+        boolean dbExists = context.getDatabasePath(DB_NAME).exists();
+        boolean mediaExists = new File(context.getFilesDir(), MEDIA_DIR).exists();
+        if (!dbExists && !mediaExists) return null;
+        return WRITER.submit(() -> {
+            synchronized (LOCK) {
+                try { db(context).delete("entries", null, null); } catch (Throwable ignored) {}
+                resetForTests();
+                context.deleteDatabase(DB_NAME);
+                File dir = new File(context.getFilesDir(), MEDIA_DIR);
+                String[] names = dir.list();
+                if (names != null) for (String name : names) new File(dir, name).delete();
+                dir.delete();
+                try { new MessageLog.KeystoreVault(KEY_ALIAS).forget(); } catch (Throwable ignored) {}
+                try { forgetKey(MEDIA_KEY_ALIAS); } catch (Throwable ignored) {}
+            }
+        });
+    }
+}

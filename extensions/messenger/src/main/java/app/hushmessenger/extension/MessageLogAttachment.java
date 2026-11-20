@@ -38,7 +38,11 @@ final class MessageLogAttachment {
     private static final String IMAGE_MAP = "com.facebook.messaging.model.attachment.AttachmentImageMap";
     private static final String IMAGE_URL = "com.facebook.messaging.model.attachment.ImageUrl";
     private static final String VIDEO_DATA = "com.facebook.messaging.model.attachment.VideoData";
+    private static final String EPHEMERAL_DATA = "com.facebook.messaging.model.attachment.EphemeralMediaData";
     private static final String URI = "android.net.Uri";
+
+    /** The kind {@link #foundForVault} reports for a message whose media is view-once (ephemeral). */
+    static final String EPHEMERAL = "ephemeral";
 
     /** What an entry's media is when the kept file is a voice clip. A photo keeps the empty kind a picture always had. */
     static final String AUDIO = "audio";
@@ -121,6 +125,44 @@ final class MessageLogAttachment {
             Settings.hookFailedPrivately(MessageLog.KEY, "Can't read a message's media address", unreadable);
         }
         return null;
+    }
+
+    /**
+     * The media on [message] the Temporary Vault may keep, or null when it carries none worth keeping. Unlike
+     * {@link #found}, the message log's keep switches don't decide here — the vault has its own — but an
+     * attachment that carries ephemeral (view-once) data is never the vault's: when a message's only attachment
+     * is one, the answer is a {@link Found} of kind {@link #EPHEMERAL} with no addresses, which tells the caller
+     * to skip the message entirely. Runs on Messenger's own thread, so it only reads fields and never fetches.
+     */
+    static Found foundForVault(Object message) {
+        if (message == null) return null;
+        boolean ephemeralOnly = false;
+        try {
+            for (Field field : fields(message.getClass())) {
+                Object attachments = field.get(message);
+                if (!(attachments instanceof List)) continue;
+                for (Object attachment : (List<?>) attachments) {
+                    if (attachment == null || !ATTACHMENT.equals(attachment.getClass().getName())) continue;
+                    if (only(attachment, EPHEMERAL_DATA) != null) {
+                        ephemeralOnly = true;
+                        continue;
+                    }
+                    Object audio = only(attachment, AUDIO_DATA);
+                    String audioAddress = audio == null ? null : signed(only(audio, URI));
+                    if (audioAddress != null) return new Found(audioAddress, AUDIO);
+                    Object video = only(attachment, VIDEO_DATA);
+                    String[] videoAddresses = video == null ? null : addressesOn(video);
+                    if (videoAddresses != null) return new Found(videoAddresses, VIDEO);
+                    Object image = only(attachment, IMAGE_DATA);
+                    String imageAddress = image == null ? null : largest(image);
+                    if (imageAddress != null) return new Found(imageAddress, PHOTO);
+                }
+            }
+        } catch (Throwable unreadable) {
+            // The message is still archived, without its media.
+            Settings.hookFailedPrivately(Vault72h.KEY, "Can't read a message's media address for the vault", unreadable);
+        }
+        return ephemeralOnly ? new Found(new String[0], EPHEMERAL) : null;
     }
 
     /** Whether media of [kind] is being kept: the log itself on and usable, and the switch under it on. */
