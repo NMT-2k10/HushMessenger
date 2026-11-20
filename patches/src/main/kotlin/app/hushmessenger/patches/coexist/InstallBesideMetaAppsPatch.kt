@@ -33,8 +33,8 @@ private const val APP_COMMUNICATION = "com.facebook.permission.prod.FB_APP_COMMU
 private const val RECEIVER_ACCESS = "com.facebook.receiver.permission.ACCESS"
 private const val APP_COMMUNICATION_FORMAT = "com.facebook.permission.%s.FB_APP_COMMUNICATION"
 
-private val sharedNames = listOf(APP_COMMUNICATION, RECEIVER_ACCESS)
-private val dexNames = sharedNames + APP_COMMUNICATION_FORMAT
+internal val sharedNames = listOf(APP_COMMUNICATION, RECEIVER_ACCESS)
+internal val dexNames = sharedNames + APP_COMMUNICATION_FORMAT
 private val expectedManifestMentions = mapOf(APP_COMMUNICATION to 26, RECEIVER_ACCESS to 3)
 private val expectedManifestRoles = mapOf(
     APP_COMMUNICATION to mapOf(
@@ -143,7 +143,7 @@ internal fun expectedDexSitesFor(
     sites: Map<Int, Map<String, String>> = expectedDexSitesByBuild,
 ): Map<String, String> = versionCode?.toIntOrNull()?.let(sites::get) ?: expectedDexSites
 
-private fun renamed(name: String): String =
+internal fun renamed(name: String): String =
     SHARED_PREFIX + name.removePrefix(META_PREFIX)
 
 private fun unsupportedApk(reason: String, versions: Map<String, List<Int>> = MessengerTarget.VERSIONS) =
