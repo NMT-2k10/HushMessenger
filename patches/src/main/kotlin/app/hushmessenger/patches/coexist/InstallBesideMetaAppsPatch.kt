@@ -34,7 +34,7 @@ private const val RECEIVER_ACCESS = "com.facebook.receiver.permission.ACCESS"
 private const val APP_COMMUNICATION_FORMAT = "com.facebook.permission.%s.FB_APP_COMMUNICATION"
 
 internal val sharedNames = listOf(APP_COMMUNICATION, RECEIVER_ACCESS)
-private val dexNames = sharedNames + APP_COMMUNICATION_FORMAT
+internal val dexNames = sharedNames + APP_COMMUNICATION_FORMAT
 private val expectedManifestMentions = mapOf(APP_COMMUNICATION to 26, RECEIVER_ACCESS to 3)
 private val expectedManifestRoles = mapOf(
     APP_COMMUNICATION to mapOf(

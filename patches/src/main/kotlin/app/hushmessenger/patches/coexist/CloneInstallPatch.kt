@@ -114,6 +114,13 @@ internal fun cloneName(value: String, newPackage: String): String? = when {
 internal val SHARED_PERMISSION_NAMES = sharedNames.map(::renamed).toSet()
 
 /**
+ * Every string code can load for those permissions: the two names above plus the format that builds one of
+ * them ("…permission.%s.FB_APP_COMMUNICATION"). The manifest only ever declares the names, but a DEX scan
+ * that forgets the format misses a load — the mistake CloneInstallPatchTest caught in run #6.
+ */
+internal val SHARED_PERMISSION_STRINGS = dexNames.map(::renamed).toSet()
+
+/**
  * A shared permission moved under the clone's own package, where the clone is the only app that can own it.
  * The shared names are only shared while every patched app is signed with one key; a clone signed with any
  * other key — Manager against Desktop, a CI build against either — can't redeclare them at all, and Android
@@ -558,11 +565,11 @@ private fun cloneSiteEdits(
     }
 }
 
-/** A shared permission's name, when [this] loads one. */
+/** A shared permission's name or its format, when [this] loads one. */
 private fun Instruction.sharedPermissionString(): String? {
     if (opcode != Opcode.CONST_STRING && opcode != Opcode.CONST_STRING_JUMBO) return null
     val string = ((this as? ReferenceInstruction)?.reference as? StringReference)?.string
-    return string?.takeIf { it in SHARED_PERMISSION_NAMES }
+    return string?.takeIf { it in SHARED_PERMISSION_STRINGS }
 }
 
 /**
@@ -594,7 +601,9 @@ internal fun sharedPermissionEdits(sites: List<Pair<MutableMethod, Int>>, newPac
     val loads = sites.map { (method, at) ->
         val current = method.implementation?.instructions?.elementAtOrNull(at)?.sharedPermissionString()
             ?: fail("${method.hookId()}@$at no longer loads a shared permission")
-        Triple(method, at, cloneSharedName(current, newPackage)!!)
+        // A load can be the format rather than a name, so the move is spelled out here instead of going
+        // through cloneSharedName, which only knows the two declared names.
+        Triple(method, at, "$newPackage." + current.removePrefix(SHARED_PREFIX))
     }
     return {
         // Last first, as a longer instruction can move the ones after it in the same method.
