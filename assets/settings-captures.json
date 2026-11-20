@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "rendered_on": "425334a68cbb18781287105b2e6849f1eaaa9b51",
+  "rendered_on": "a1b9fbb7b778e47abef1c2033fd52a4cd712eaca",
   "producer": "SettingsScreenshotTest.captureProductionPagesAndDialogsInBothThemes",
   "controls": 107,
-  "catalog_sha256": "0b53490f51d0c7861689ff17c5797a621e713694821409b86272c27e3f4ab4b1",
+  "catalog_sha256": "a62ca75b8703d3a53863063afaee05cc69f24a48f28b6ab831469585e0932de4",
   "images": {
     "assets/settings-dark.png": "7fbc84a91408150bd31fff2f93a73c9316eaa1bf2ec99fa1917e5473f6e1d727",
     "assets/settings-light.png": "a7d39ed1022299bd0fff9c8159ca4b32359736e46f4b3c74050ddbd424f59c80",
