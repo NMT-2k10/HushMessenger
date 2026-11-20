@@ -1,3 +1,4 @@
+
 package app.hushmessenger.patches.misc
 
 import app.hushmessenger.patches.MessengerTarget
@@ -29,106 +30,140 @@ private const val PARCEL = "Landroid/os/Parcel;"
 private fun fail(detail: String): Nothing =
     throw PatchException("$MEDIA_DIAGNOSTICS_PATCH: $detail. Start with an unmodified supported APK.")
 
-/** The field-store and field-read opcode families, matched as enum values, never by name text. */
 private val FIELD_STORES = setOf(
-    Opcode.IPUT, Opcode.IPUT_WIDE, Opcode.IPUT_OBJECT, Opcode.IPUT_BOOLEAN,
-    Opcode.IPUT_BYTE, Opcode.IPUT_CHAR, Opcode.IPUT_SHORT,
-)
-private val FIELD_READS = setOf(
-    Opcode.IGET, Opcode.IGET_WIDE, Opcode.IGET_OBJECT, Opcode.IGET_BOOLEAN,
-    Opcode.IGET_BYTE, Opcode.IGET_CHAR, Opcode.IGET_SHORT,
+    Opcode.IPUT,
+    Opcode.IPUT_WIDE,
+    Opcode.IPUT_OBJECT,
+    Opcode.IPUT_BOOLEAN,
+    Opcode.IPUT_BYTE,
+    Opcode.IPUT_CHAR,
+    Opcode.IPUT_SHORT,
 )
 
-/** Whether [method] stores (writes) or reads the [type] field an [owner] class declares. */
-private fun touchesField(method: Method, owner: String, type: String, writes: Boolean): Boolean =
+private val FIELD_READS = setOf(
+    Opcode.IGET,
+    Opcode.IGET_WIDE,
+    Opcode.IGET_OBJECT,
+    Opcode.IGET_BOOLEAN,
+    Opcode.IGET_BYTE,
+    Opcode.IGET_CHAR,
+    Opcode.IGET_SHORT,
+)
+
+private fun touchesField(
+    method: Method,
+    owner: String,
+    type: String,
+    writes: Boolean,
+): Boolean =
     method.implementation?.instructions?.any { instruction ->
-        val reference = (instruction as? ReferenceInstruction)?.reference as? FieldReference ?: return@any false
+        val reference =
+            (instruction as? ReferenceInstruction)?.reference as? FieldReference
+                ?: return@any false
+
         instruction.opcode in (if (writes) FIELD_STORES else FIELD_READS) &&
-            reference.definingClass == owner && reference.type == type
+            reference.definingClass == owner &&
+            reference.type == type
     } ?: false
 
-/**
- * The constructor that assembles an attachment out of its builder: the attachment class's one single-argument
- * constructor whose parameter is not a Parcel and whose body stores both the ephemeral marker and the video
- * into the new attachment. Attachments are immutable once built (HANDOFF §21), so assembly is the one moment
- * every data-layer path passes through with the full media in hand. Null unless exactly one constructor fits.
- */
 internal fun findDataBuiltHook(classes: Iterable<ClassDef>): Method? {
     val attachment = classes.firstOrNull { it.type == ATTACHMENT } ?: return null
+
     return attachment.methods.filter { method ->
-        method.name == "<init>" && method.returnType == "V" &&
-            method.parameterTypes.size == 1 && method.parameterTypes[0].toString() != PARCEL &&
-            touchesField(method, ATTACHMENT, EPHEMERAL_DATA, writes = true) &&
-            touchesField(method, ATTACHMENT, VIDEO_DATA, writes = true)
+        method.name == "<init>" &&
+            method.returnType == "V" &&
+            method.parameterTypes.size == 1 &&
+            method.parameterTypes[0].toString() != PARCEL &&
+            touchesField(
+                method,
+                ATTACHMENT,
+                EPHEMERAL_DATA,
+                writes = true,
+            ) &&
+            touchesField(
+                method,
+                ATTACHMENT,
+                VIDEO_DATA,
+                writes = true,
+            )
     }.singleOrNull()
 }
 
-/**
- * The player bridge: the one method that builds a video's attachment data out of a session and a message and
- * reads the message attachment's video to do it (HANDOFF §21). The shape is unique in the stock 587 build;
- * null unless exactly one method fits, so a build that rearranges the bridge stops the patch instead of
- * hooking a lookalike.
- */
 internal fun findPlayerBridgeHook(classes: Iterable<ClassDef>): Method? =
     classes.flatMap { it.methods }.filter { method ->
         method.parameterTypes.map { it.toString() } == listOf(SESSION, MESSAGE) &&
             method.returnType == VIDEO_ATTACHMENT_DATA &&
-            touchesField(method, ATTACHMENT, VIDEO_DATA, writes = false)
+            touchesField(
+                method,
+                ATTACHMENT,
+                VIDEO_DATA,
+                writes = false,
+            )
     }.singleOrNull()
 
-/** The assembly constructor again, as a mutable method: right shape, and a local register for the gate. */
 internal fun MutableMethod.validateDataBuiltHook() {
-    if (name != "<init>" || parameterTypes.size != 1 || parameterTypes[0].toString() == PARCEL) {
+    if (
+        name != "<init>" ||
+        parameterTypes.size != 1 ||
+        parameterTypes[0].toString() == PARCEL
+    ) {
         fail("the attachment assembly constructor is not the one the finder described")
     }
-    val registers = implementation?.registerCount ?: fail("the attachment assembly constructor has no code")
-    // This and the builder occupy the top two registers; the gate needs one local below them.
-    if (registers < 3) fail("the attachment assembly constructor has no register to spare for the gate")
+
+    val registers = implementation?.registerCount
+        ?: fail("the attachment assembly constructor has no code")
+
+    if (registers < 3) {
+        fail("the attachment assembly constructor has no register to spare for the gate")
+    }
 }
 
-/** The bridge method again, as a mutable method: right shape, and a local register for the gate. */
 internal fun MutableMethod.validatePlayerBridgeHook() {
-    if (parameterTypes.map { it.toString() } != listOf(SESSION, MESSAGE) || returnType != VIDEO_ATTACHMENT_DATA) {
+    if (
+        parameterTypes.map { it.toString() } != listOf(SESSION, MESSAGE) ||
+        returnType != VIDEO_ATTACHMENT_DATA
+    ) {
         fail("the player bridge method is not the one the finder described")
     }
-    val registers = implementation?.registerCount ?: fail("the player bridge method has no code")
-    // This, the session and the message occupy the top three registers; the gate needs one local below them.
-    if (registers < 4) fail("the player bridge method has no register to spare for the gate")
+
+    val registers = implementation?.registerCount
+        ?: fail("the player bridge method has no code")
+
+    if (registers < 4) {
+        fail("the player bridge method has no register to spare for the gate")
+    }
 }
 
-/**
- * Hands the builder to the extension when an attachment is assembled. The gate is asked first, so with the
- * Media diagnostics switch off the hook is one static call and a branch, and nothing is read or kept.
- */
 internal fun MutableMethod.injectDataBuilt() {
-    addInstructionsWithLabels(0, """
+    addInstructionsWithLabels(
+        0,
+        """
         invoke-static {}, $SETTINGS->mediaDiagnosticsWanted()Z
         move-result v0
         if-eqz v0, :media_diag_skip
         move-object v0, p1
         invoke-static {v0}, $SETTINGS->observeDataBuilt(Ljava/lang/Object;)V
         :media_diag_skip
-    """)
+        nop
+        """.trimIndent(),
+    )
 }
 
-/** Hands the message to the extension as the bridge starts building a video's data out of it. Same gate. */
 internal fun MutableMethod.injectPlayerBridge() {
-    addInstructionsWithLabels(0, """
+    addInstructionsWithLabels(
+        0,
+        """
         invoke-static {}, $SETTINGS->mediaDiagnosticsWanted()Z
         move-result v0
         if-eqz v0, :media_diag_skip
         move-object/from16 v0, p2
         invoke-static {v0}, $SETTINGS->observePlayerBridge(Ljava/lang/Object;)V
         :media_diag_skip
-    """)
+        nop
+        """.trimIndent(),
+    )
 }
 
-/**
- * A standalone patch, not a control: it has no switch of its own (the Media diagnostics sub-switch gates it at
- * runtime) and no ControlProfiles entry. Per AGENTS §3.3's second branch, the only verified build family is
- * stock 587 (347415350, HANDOFF §21–§22); the finders are structural and fail hard on any build whose shapes
- * differ, so an unsupported build stops this patch instead of receiving a guessed hook.
- */
 val mediaDiagnosticsPatch = patch(
     name = MEDIA_DIAGNOSTICS_PATCH,
     description = "Test builds only. Adds the two read-only observation hooks the Media diagnostics switch " +
@@ -144,18 +179,34 @@ val mediaDiagnosticsPatch = patch(
 
     execute {
         val classes = messengerClasses()
+
         val built = findDataBuiltHook(classes)
-            ?: fail("no constructor assembles an attachment from its builder with both the ephemeral marker and the video")
+            ?: fail(
+                "no constructor assembles an attachment from its builder " +
+                    "with both the ephemeral marker and the video"
+            )
+
         val bridge = findPlayerBridgeHook(classes)
-            ?: fail("no method builds a video's attachment data from a session and a message")
+            ?: fail(
+                "no method builds a video's attachment data " +
+                    "from a session and a message"
+            )
+
         val builtMethod = mutableClassDefBy(built.definingClass).methods
             .firstOrNull { it.hookId() == built.hookId() }
-            ?: fail("the attachment assembly constructor could not be reopened for editing")
+            ?: fail(
+                "the attachment assembly constructor could not be reopened for editing"
+            )
+
         builtMethod.validateDataBuiltHook()
         builtMethod.injectDataBuilt()
+
         val bridgeMethod = mutableClassDefBy(bridge.definingClass).methods
             .firstOrNull { it.hookId() == bridge.hookId() }
-            ?: fail("the player bridge method could not be reopened for editing")
+            ?: fail(
+                "the player bridge method could not be reopened for editing"
+            )
+
         bridgeMethod.validatePlayerBridgeHook()
         bridgeMethod.injectPlayerBridge()
     }
