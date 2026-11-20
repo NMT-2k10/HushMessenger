@@ -55,13 +55,13 @@ import javax.crypto.spec.GCMParameterSpec;
 public final class Vault72h {
     private Vault72h() {}
 
-    static final String KEY = "vault_72h";
+    static final String KEY = "temporary_vault";
     /** Keep a photo at the size it was sent, fetched as the message is captured. */
-    static final String KEEP_PHOTOS = "vault_72h_keep_photos";
+    static final String KEEP_PHOTOS = "temporary_vault_keep_photos";
     /** Keep a video, fetched as the message is captured. */
-    static final String KEEP_VIDEOS = "vault_72h_keep_videos";
+    static final String KEEP_VIDEOS = "temporary_vault_keep_videos";
     /** Keep a voice message's clip, fetched as the message is captured. */
-    static final String KEEP_VOICE = "vault_72h_keep_voice";
+    static final String KEEP_VOICE = "temporary_vault_keep_voice";
 
     static final String DB_NAME = "hush_vault72h.db";
     static final String MEDIA_DIR = "hush_vault_media";

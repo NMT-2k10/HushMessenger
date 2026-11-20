@@ -710,12 +710,12 @@ final class SettingsText {
         ENGLISH.put("vault_gif", "GIF");
         ENGLISH.put("vault_file", "File");
         ENGLISH.put("vault_attachment", "Attachment");
-        ENGLISH.put("vault_72h_keep_photos", "Keep photos in the Vault");
-        ENGLISH.put("vault_72h_keep_photos_help", "When it's on, a photo a message arrives with is saved inside the Vault for the same 72 hours. Off, only the message's words are kept.");
-        ENGLISH.put("vault_72h_keep_videos", "Keep videos in the Vault");
-        ENGLISH.put("vault_72h_keep_videos_help", "When it's on, a video a message arrives with is saved inside the Vault for the same 72 hours, downloaded in the background. Off, only the message's words are kept.");
-        ENGLISH.put("vault_72h_keep_voice", "Keep voice in the Vault");
-        ENGLISH.put("vault_72h_keep_voice_help", "When it's on, a voice message is saved inside the Vault for the same 72 hours. Off, only the fact that one arrived is kept.");
+        ENGLISH.put("temporary_vault_keep_photos", "Keep photos in the Vault");
+        ENGLISH.put("temporary_vault_keep_photos_help", "When it's on, a photo a message arrives with is saved inside the Vault for the same 72 hours. Off, only the message's words are kept.");
+        ENGLISH.put("temporary_vault_keep_videos", "Keep videos in the Vault");
+        ENGLISH.put("temporary_vault_keep_videos_help", "When it's on, a video a message arrives with is saved inside the Vault for the same 72 hours, downloaded in the background. Off, only the message's words are kept.");
+        ENGLISH.put("temporary_vault_keep_voice", "Keep voice in the Vault");
+        ENGLISH.put("temporary_vault_keep_voice_help", "When it's on, a voice message is saved inside the Vault for the same 72 hours. Off, only the fact that one arrived is kept.");
         ENGLISH.put("message_log_search", "Search messages and names");
         ENGLISH.put("message_log_by_chat", "Group by chat");
         ENGLISH.put("message_log_by_date", "Newest first");

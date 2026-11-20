@@ -237,7 +237,7 @@ public final class SettingsActivity extends Activity {
         {"nearby_scans", "Stop nearby scans", "Stops Messenger from reading the list of Wi-Fi networks around you, and hides the name and hardware address of the one you're connected to, the way Android does when Messenger can't see your location. Also stops the timer it can run while it's open to check your location and scan for Wi-Fi networks and Bluetooth devices.", "tracking"},
         {"phone_id_sync", "Stop app list and device ID sharing", "Stops Messenger from going through the apps on your phone to find other Meta apps, and from asking them for the device ID Meta uses to link the apps on one phone. Messenger keeps the ID it already has.", "tracking"},
         {"message_log", "Keep a message log", "Saves each message when its notification arrives, so you can read it after it's unsent, and marks the ones that were. Works in encrypted chats. Stays on your phone. In a chat with disappearing messages on, Messenger leaves the words out of its notification, so those messages aren't logged.", "privacy"},
-        {"vault_72h", "Temporary Vault (72 hours)", "Saves messages on this phone for 72 hours as they arrive and as an open chat shows them, so you can still read them if they're unsent, then deletes each copy when its 72 hours are up. View-once messages are never saved. Encrypted and stays on your phone. Photos, videos and voice are kept only with the switches under this one on.", "privacy"},
+        {"temporary_vault", "Temporary Vault (72 hours)", "Saves messages on this phone for 72 hours as they arrive and as an open chat shows them, so you can still read them if they're unsent, then deletes each copy when its 72 hours are up. View-once messages are never saved. Encrypted and stays on your phone. Photos, videos and voice are kept only with the switches under this one on.", "privacy"},
         {"allow_screenshot", "Allow screenshots", "Lets you screenshot protected chat media, such as view-once photos and Quicksnap, and stops screenshot notices. A switch under it puts a Save button on the view-once viewer. It doesn't add replay.", "privacy"},
         {"secure_chat", "Block screenshots in chats", "Stops a screenshot or a screen recording of a chat you have open on this phone, and leaves the chat out of the app switcher's preview. Android refuses the screenshot itself, so it covers every chat and not only the disappearing ones. A chat that was already open needs opening again. The person you're chatting with still has their own phone to screenshot on.", "privacy"},
         {"appear_offline", "Appear offline", "Stops Messenger from telling people you're active, while you keep seeing who else is. Messenger's own Active status setting stays on, so the green dots in your chat list and the People tab work as they always did, and only what Messenger reports about you changes. It takes effect the next time Messenger goes to the background or comes back, so restarting it makes the change land right away.", "privacy"},
@@ -1142,11 +1142,11 @@ public final class SettingsActivity extends Activity {
                 else if (Vault72h.KEY.equals(spec[0])) {
                     vault.addActions(wrapper);
                     ui.add(wrapper, controlRow(Vault72h.KEEP_PHOTOS, text.format(Vault72h.KEEP_PHOTOS),
-                        text.format("vault_72h_keep_photos_help"), false), 8);
+                        text.format("temporary_vault_keep_photos_help"), false), 8);
                     ui.add(wrapper, controlRow(Vault72h.KEEP_VIDEOS, text.format(Vault72h.KEEP_VIDEOS),
-                        text.format("vault_72h_keep_videos_help"), false), 8);
+                        text.format("temporary_vault_keep_videos_help"), false), 8);
                     ui.add(wrapper, controlRow(Vault72h.KEEP_VOICE, text.format(Vault72h.KEEP_VOICE),
-                        text.format("vault_72h_keep_voice_help"), false), 8);
+                        text.format("temporary_vault_keep_voice_help"), false), 8);
                 }
                 else {
                     messageLog.addMessageLogActions(wrapper);
@@ -2316,9 +2316,9 @@ public final class SettingsActivity extends Activity {
             if (Vault72h.KEY.equals(spec[0])) {
                 inside = text.get("vault_title") + " " + text.get("vault_hint") + " " + text.get("vault_view")
                     + " " + text.get("vault_clear");
-                inside += " " + text.get(Vault72h.KEEP_PHOTOS) + " " + text.get("vault_72h_keep_photos_help");
-                inside += " " + text.get(Vault72h.KEEP_VIDEOS) + " " + text.get("vault_72h_keep_videos_help");
-                inside += " " + text.get(Vault72h.KEEP_VOICE) + " " + text.get("vault_72h_keep_voice_help");
+                inside += " " + text.get(Vault72h.KEEP_PHOTOS) + " " + text.get("temporary_vault_keep_photos_help");
+                inside += " " + text.get(Vault72h.KEEP_VIDEOS) + " " + text.get("temporary_vault_keep_videos_help");
+                inside += " " + text.get(Vault72h.KEEP_VOICE) + " " + text.get("temporary_vault_keep_voice_help");
             }
             boolean match = SettingsSearch.matches(terms, spec[1], spec[2],
                 SettingsText.english(spec[3]), text.display(text.control(spec, 1)), text.display(text.control(spec, 2)), text.get(spec[3]), inside);
