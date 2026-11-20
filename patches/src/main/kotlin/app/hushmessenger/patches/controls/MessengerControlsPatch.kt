@@ -549,9 +549,9 @@ private fun controlPatch(key: String, title: String, summary: String, group: Str
                 }
                 injectControl(key, methods)
                 for ((old, new) in built) { host.methods.remove(old); host.directMethods.remove(old); host.methods.add(new); host.directMethods.add(new) }
-            } else if (key == "keep_unsent" || key == HIDDEN_WORDS) {
+            } else if (key == "keep_unsent" || key == HIDDEN_WORDS || key == "vault_72h") {
                 // Built before the first edit, so a row class without the helper's getters stops the patch with Messenger
-                // untouched. Only encrypted chats' CQL rows take the helper, and both controls that read a row's text
+                // untouched. Only encrypted chats' CQL rows take the helper, and the controls that read a row's text
                 // call the same one, so the control that got there first leaves nothing to add.
                 val rows = methods["unsent_indicator"].orEmpty().filter { it.validateUnsentIndicator() }.map { it.definingClass }.distinct()
                 val helpers = rows.map { mutableClassDefBy(it) to unsentRowHelper(it) }
@@ -776,6 +776,10 @@ val keepMessageLogPatch = controlPatch("message_log", "Keep a message log",
     "Saves each message when its notification arrives, so you can still read it if it's unsent, and marks the ones that were. Works in end-to-end encrypted chats too. Stays on your phone. A clock next to the new message button in Chats can open the log too, and so can a row in the menu you get when you press and hold a chat, which opens just that chat's messages. Log chats that don't notify, under it, adds muted and restricted chats without notifying you.", "Privacy",
     MESSAGE_LOG, UNSENT_RECALL, UNSENT_CLEAR, MESSAGE_LOG_BUTTON, MESSAGE_LOG_CLICK, QUIET_LOG_CHECK, QUIET_LOG_DROP,
     HIDDEN_CHAT_LIST, HIDDEN_CHAT_ROW, HIDDEN_CHAT_TAP)
+@Suppress("unused")
+val vault72hPatch = controlPatch("vault_72h", "Temporary Vault (72 hours)",
+    "Saves messages on this phone for 72 hours as they arrive and as an open chat shows them, so you can still read them if they're unsent, then deletes each copy when its 72 hours are up. View-once messages are never saved. Encrypted and stays on your phone. Photos, videos and voice are kept only with the switches under it on.", "Privacy",
+    MESSAGE_LOG, UNSENT_RECALL, UNSENT_CLEAR, "unsent_indicator")
 @Suppress("unused")
 val autoReplyPatch = controlPatch("auto_reply", "Auto reply",
     "Answers messages with replies you write in HushMessenger settings, when they have words you pick or any message at all. Replies go out through Messenger's own notification reply, encrypted chats too, at most once every five minutes per chat.", "Conversations")
