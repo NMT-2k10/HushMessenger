@@ -138,12 +138,12 @@ val mediaDiagnosticsPatch = patch(
         val bridge = findPlayerBridgeHook(classes)
             ?: fail("no method builds a video's attachment data from a session and a message")
         val builtMethod = mutableClassDefBy(built.definingClass).methods
-            .firstOrNull { hookId(it) == hookId(built) }
+            .firstOrNull { it.hookId() == built.hookId() }
             ?: fail("the attachment assembly constructor could not be reopened for editing")
         builtMethod.validateDataBuiltHook()
         builtMethod.injectDataBuilt()
         val bridgeMethod = mutableClassDefBy(bridge.definingClass).methods
-            .firstOrNull { hookId(it) == hookId(bridge) }
+           .firstOrNull { it.hookId() == bridge.hookId() }
             ?: fail("the player bridge method could not be reopened for editing")
         bridgeMethod.validatePlayerBridgeHook()
         bridgeMethod.injectPlayerBridge()
