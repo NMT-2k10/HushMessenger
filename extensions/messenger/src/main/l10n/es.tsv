@@ -938,8 +938,8 @@ ios_bars.title	Barras del chat translúcidas
 ios_bars.description	La barra de arriba del chat y la caja de mensajes se vuelven translúcidas, con los mensajes pasando por debajo y asomando borrosos, como lo hacen las barras de un iPhone. Necesita Android 12 o posterior.
 
 # Temporary Vault (72 hours).
-vault_72h.title	Bóveda temporal (72 horas)
-vault_72h.description	Guarda los mensajes en este teléfono durante 72 horas cuando llegan y cuando un chat abierto los muestra, para que puedas seguir leyéndolos si se anula su envío, y elimina cada copia cuando pasan sus 72 horas. Los mensajes de una sola visualización nunca se guardan. Está cifrado y se queda en tu teléfono. Las fotos, los vídeos y los mensajes de voz solo se guardan con los interruptores de abajo activados.
+temporary_vault.title	Bóveda temporal (72 horas)
+temporary_vault.description	Guarda los mensajes en este teléfono durante 72 horas cuando llegan y cuando un chat abierto los muestra, para que puedas seguir leyéndolos si se anula su envío, y elimina cada copia cuando pasan sus 72 horas. Los mensajes de una sola visualización nunca se guardan. Está cifrado y se queda en tu teléfono. Las fotos, los vídeos y los mensajes de voz solo se guardan con los interruptores de abajo activados.
 vault_title	Bóveda temporal
 vault_hint	Todo lo que hay aquí se guardó en este teléfono cuando llegó y se elimina 72 horas después. Los mensajes de una sola visualización nunca se guardan.
 vault_view	Abrir la bóveda
@@ -978,9 +978,9 @@ vault_sticker	Pegatina
 vault_gif	GIF
 vault_file	Archivo
 vault_attachment	Adjunto
-vault_72h_keep_photos	Guardar las fotos en la bóveda
-vault_72h_keep_photos_help	Cuando está activado, la foto que llega con un mensaje se guarda en la bóveda durante las mismas 72 horas. Desactivado, solo se guarda el texto del mensaje.
-vault_72h_keep_videos	Guardar los vídeos en la bóveda
-vault_72h_keep_videos_help	Cuando está activado, el vídeo que llega con un mensaje se guarda en la bóveda durante las mismas 72 horas y se descarga en segundo plano. Desactivado, solo se guarda el texto del mensaje.
-vault_72h_keep_voice	Guardar los mensajes de voz en la bóveda
-vault_72h_keep_voice_help	Cuando está activado, un mensaje de voz se guarda en la bóveda durante las mismas 72 horas. Desactivado, solo se guarda que llegó uno.
+temporary_vault_keep_photos	Guardar las fotos en la bóveda
+temporary_vault_keep_photos_help	Cuando está activado, la foto que llega con un mensaje se guarda en la bóveda durante las mismas 72 horas. Desactivado, solo se guarda el texto del mensaje.
+temporary_vault_keep_videos	Guardar los vídeos en la bóveda
+temporary_vault_keep_videos_help	Cuando está activado, el vídeo que llega con un mensaje se guarda en la bóveda durante las mismas 72 horas y se descarga en segundo plano. Desactivado, solo se guarda el texto del mensaje.
+temporary_vault_keep_voice	Guardar los mensajes de voz en la bóveda
+temporary_vault_keep_voice_help	Cuando está activado, un mensaje de voz se guarda en la bóveda durante las mismas 72 horas. Desactivado, solo se guarda que llegó uno.

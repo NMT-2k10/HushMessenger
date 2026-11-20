@@ -938,8 +938,8 @@ ios_bars.title	Yarı saydam sohbet çubukları
 ios_bars.description	Sohbetin üst çubuğu ve mesaj kutusu yarı saydam olur, mesajlar altlarından kayar ve bulanık görünür, iPhone'daki çubuklar gibi. Android 12 veya sonrası gerekir.
 
 # Temporary Vault (72 hours).
-vault_72h.title	Geçici Kasa (72 saat)
-vault_72h.description	Mesajları bu telefonda, geldiklerinde ve açık bir sohbet gösterdiğinde 72 saat boyunca saklar; böylece gönderim iptal edilse bile okuyabilirsiniz ve her kopya 72 saati dolduğunda silinir. Tek görüntülemelik mesajlar asla kaydedilmez. Şifrelidir ve telefonunuzda kalır. Fotoğraflar, videolar ve sesli mesajlar yalnızca altındaki anahtarlar açıkken saklanır.
+temporary_vault.title	Geçici Kasa (72 saat)
+temporary_vault.description	Mesajları bu telefonda, geldiklerinde ve açık bir sohbet gösterdiğinde 72 saat boyunca saklar; böylece gönderim iptal edilse bile okuyabilirsiniz ve her kopya 72 saati dolduğunda silinir. Tek görüntülemelik mesajlar asla kaydedilmez. Şifrelidir ve telefonunuzda kalır. Fotoğraflar, videolar ve sesli mesajlar yalnızca altındaki anahtarlar açıkken saklanır.
 vault_title	Geçici Kasa
 vault_hint	Buradaki her şey, mesaj geldiğinde bu telefona kaydedildi ve 72 saat sonra silinir. Tek görüntülemelik mesajlar asla kaydedilmez.
 vault_view	Kasayı Aç
@@ -978,9 +978,9 @@ vault_sticker	Çıkartma
 vault_gif	GIF
 vault_file	Dosya
 vault_attachment	Ek
-vault_72h_keep_photos	Fotoğrafları Kasada sakla
-vault_72h_keep_photos_help	Açıkken, bir mesajla gelen fotoğraf Kasada aynı 72 saat boyunca saklanır. Kapalıyken yalnızca mesajın metni saklanır.
-vault_72h_keep_videos	Videoları Kasada sakla
-vault_72h_keep_videos_help	Açıkken, bir mesajla gelen video Kasada aynı 72 saat boyunca saklanır ve arka planda indirilir. Kapalıyken yalnızca mesajın metni saklanır.
-vault_72h_keep_voice	Sesli mesajları Kasada sakla
-vault_72h_keep_voice_help	Açıkken, bir sesli mesaj Kasada aynı 72 saat boyunca saklanır. Kapalıyken yalnızca bir sesli mesajın geldiği kaydedilir.
+temporary_vault_keep_photos	Fotoğrafları Kasada sakla
+temporary_vault_keep_photos_help	Açıkken, bir mesajla gelen fotoğraf Kasada aynı 72 saat boyunca saklanır. Kapalıyken yalnızca mesajın metni saklanır.
+temporary_vault_keep_videos	Videoları Kasada sakla
+temporary_vault_keep_videos_help	Açıkken, bir mesajla gelen video Kasada aynı 72 saat boyunca saklanır ve arka planda indirilir. Kapalıyken yalnızca mesajın metni saklanır.
+temporary_vault_keep_voice	Sesli mesajları Kasada sakla
+temporary_vault_keep_voice_help	Açıkken, bir sesli mesaj Kasada aynı 72 saat boyunca saklanır. Kapalıyken yalnızca bir sesli mesajın geldiği kaydedilir.

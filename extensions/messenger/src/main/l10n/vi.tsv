@@ -938,8 +938,8 @@ ios_bars.title	Thanh chat trong mờ
 ios_bars.description	Thanh trên cùng của đoạn chat và hộp tin nhắn trở nên trong mờ, tin nhắn chạy bên dưới và hiện lên mờ qua thanh, giống các thanh trên iPhone. Cần Android 12 hoặc mới hơn.
 
 # Temporary Vault (72 hours).
-vault_72h.title	Kho Tạm Thời (72 giờ)
-vault_72h.description	Lưu tin nhắn trên điện thoại này trong 72 giờ ngay khi tin đến và khi cuộc trò chuyện đang mở hiển thị tin, để bạn vẫn đọc được nếu tin bị thu hồi, rồi xóa từng bản sao khi hết 72 giờ. Tin nhắn xem một lần không bao giờ được lưu. Dữ liệu được mã hóa và chỉ nằm trên điện thoại của bạn. Ảnh, video và tin nhắn thoại chỉ được giữ khi bật các công tắc bên dưới mục này.
+temporary_vault.title	Kho Tạm Thời (72 giờ)
+temporary_vault.description	Lưu tin nhắn trên điện thoại này trong 72 giờ ngay khi tin đến và khi cuộc trò chuyện đang mở hiển thị tin, để bạn vẫn đọc được nếu tin bị thu hồi, rồi xóa từng bản sao khi hết 72 giờ. Tin nhắn xem một lần không bao giờ được lưu. Dữ liệu được mã hóa và chỉ nằm trên điện thoại của bạn. Ảnh, video và tin nhắn thoại chỉ được giữ khi bật các công tắc bên dưới mục này.
 vault_title	Kho Tạm Thời
 vault_hint	Mọi thứ ở đây được lưu trên điện thoại này ngay khi tin đến và sẽ bị xóa sau 72 giờ. Tin nhắn xem một lần không bao giờ được lưu.
 vault_view	Mở Kho
@@ -978,9 +978,9 @@ vault_sticker	Nhãn dán
 vault_gif	GIF
 vault_file	Tệp
 vault_attachment	Tệp đính kèm
-vault_72h_keep_photos	Giữ ảnh trong Kho
-vault_72h_keep_photos_help	Khi bật, ảnh đi kèm tin nhắn sẽ được lưu trong Kho trong cùng 72 giờ. Khi tắt, chỉ nội dung chữ của tin nhắn được giữ.
-vault_72h_keep_videos	Giữ video trong Kho
-vault_72h_keep_videos_help	Khi bật, video đi kèm tin nhắn sẽ được lưu trong Kho trong cùng 72 giờ và được tải xuống ở chế độ nền. Khi tắt, chỉ nội dung chữ của tin nhắn được giữ.
-vault_72h_keep_voice	Giữ tin nhắn thoại trong Kho
-vault_72h_keep_voice_help	Khi bật, tin nhắn thoại sẽ được lưu trong Kho trong cùng 72 giờ. Khi tắt, chỉ ghi nhận rằng đã có một tin nhắn thoại đến.
+temporary_vault_keep_photos	Giữ ảnh trong Kho
+temporary_vault_keep_photos_help	Khi bật, ảnh đi kèm tin nhắn sẽ được lưu trong Kho trong cùng 72 giờ. Khi tắt, chỉ nội dung chữ của tin nhắn được giữ.
+temporary_vault_keep_videos	Giữ video trong Kho
+temporary_vault_keep_videos_help	Khi bật, video đi kèm tin nhắn sẽ được lưu trong Kho trong cùng 72 giờ và được tải xuống ở chế độ nền. Khi tắt, chỉ nội dung chữ của tin nhắn được giữ.
+temporary_vault_keep_voice	Giữ tin nhắn thoại trong Kho
+temporary_vault_keep_voice_help	Khi bật, tin nhắn thoại sẽ được lưu trong Kho trong cùng 72 giờ. Khi tắt, chỉ ghi nhận rằng đã có một tin nhắn thoại đến.

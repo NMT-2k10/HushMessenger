@@ -938,8 +938,8 @@ ios_bars.title	半透明聊天列
 ios_bars.description	聊天室的頂端列和訊息框變成半透明，訊息會從下面滑過並透出模糊的樣子，就像 iPhone 的列一樣。需要 Android 12 或更新版本。
 
 # Temporary Vault (72 hours).
-vault_72h.title	暫存保管庫（72 小時）
-vault_72h.description	在訊息到達時以及在開啟的聊天顯示訊息時，將訊息保存在這支手機上 72 小時，讓你在訊息被收回後仍可閱讀，並在每份副本滿 72 小時時刪除。閱後即焚訊息永遠不會被保存。內容經過加密，只保留在你的手機上。相片、影片和語音訊息只有在下方開關開啟時才會保留。
+temporary_vault.title	暫存保管庫（72 小時）
+temporary_vault.description	在訊息到達時以及在開啟的聊天顯示訊息時，將訊息保存在這支手機上 72 小時，讓你在訊息被收回後仍可閱讀，並在每份副本滿 72 小時時刪除。閱後即焚訊息永遠不會被保存。內容經過加密，只保留在你的手機上。相片、影片和語音訊息只有在下方開關開啟時才會保留。
 vault_title	暫存保管庫
 vault_hint	這裡的所有內容都是在訊息到達時保存在這支手機上的，並會在 72 小時後刪除。閱後即焚訊息永遠不會被保存。
 vault_view	開啟保管庫
@@ -978,9 +978,9 @@ vault_sticker	貼圖
 vault_gif	GIF
 vault_file	檔案
 vault_attachment	附件
-vault_72h_keep_photos	在保管庫中保留相片
-vault_72h_keep_photos_help	開啟時，隨訊息到達的相片會在保管庫中保留相同的 72 小時。關閉時，只保留訊息的文字。
-vault_72h_keep_videos	在保管庫中保留影片
-vault_72h_keep_videos_help	開啟時，隨訊息到達的影片會在保管庫中保留相同的 72 小時，並在背景下載。關閉時，只保留訊息的文字。
-vault_72h_keep_voice	在保管庫中保留語音訊息
-vault_72h_keep_voice_help	開啟時，語音訊息會在保管庫中保留相同的 72 小時。關閉時，只記錄曾有一則語音訊息到達。
+temporary_vault_keep_photos	在保管庫中保留相片
+temporary_vault_keep_photos_help	開啟時，隨訊息到達的相片會在保管庫中保留相同的 72 小時。關閉時，只保留訊息的文字。
+temporary_vault_keep_videos	在保管庫中保留影片
+temporary_vault_keep_videos_help	開啟時，隨訊息到達的影片會在保管庫中保留相同的 72 小時，並在背景下載。關閉時，只保留訊息的文字。
+temporary_vault_keep_voice	在保管庫中保留語音訊息
+temporary_vault_keep_voice_help	開啟時，語音訊息會在保管庫中保留相同的 72 小時。關閉時，只記錄曾有一則語音訊息到達。
