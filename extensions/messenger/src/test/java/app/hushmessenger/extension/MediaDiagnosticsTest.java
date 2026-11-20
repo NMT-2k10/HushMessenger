@@ -65,6 +65,76 @@ public class MediaDiagnosticsTest {
         assertTrue(line, line.contains("ephemeral=type:VIEW_ONCE,state:UNOPENED"));
         assertTrue(line, line.contains("{scheme:https,host:fbcdn,seg:3,ext:mp4,q:[_nc_cat+oe+oh]}"));
         assertTrue(line, line.contains("ext:jpg"));
+        assertTrue(line, line.contains("media-diag v2"));
+        assertTrue(line, line.contains("videoField=present"));
+        assertTrue(line, line.contains("videoData=present"));
+        assertTrue(line, line.contains("ephemeralField=present"));
+        assertTrue(line, line.contains("ephemeralData=present"));
+        assertTrue(line, line.contains("audioData=null"));
+        assertTrue(line, line.contains("imageData=null"));
+        assertTrue(line, line.contains("uriFields=4"));
+        assertTrue(line, line.contains("uriSet=2"));
+        assertTrue(line, line.contains("filled=2/7"));
+    }
+
+    /**
+     * The line a real view-once arrival produced under v1 (HANDOFF §20): an attachment is there, but every
+     * media field on it holds nothing. The v2 states must say the fields EXIST and are null — the shell case —
+     * and the one value the attachment does hold must be counted, never printed.
+     */
+    @Test public void nullMediaFieldsReadAsNullNotAbsent() {
+        enable();
+        Attachment shell = new Attachment();
+        shell.A0L = "attachment-id";
+        MediaDiagnostics.observe(Message.with(shell));
+        assertEquals(1, lines.size());
+        String line = lines.get(0);
+        assertTrue(line, line.contains("attachments=1"));
+        assertTrue(line, line.contains("video=no"));
+        assertTrue(line, line.contains("videoField=present"));
+        assertTrue(line, line.contains("videoData=null"));
+        assertTrue(line, line.contains("ephemeral=absent"));
+        assertTrue(line, line.contains("ephemeralField=present"));
+        assertTrue(line, line.contains("ephemeralData=null"));
+        assertTrue(line, line.contains("audioData=null"));
+        assertTrue(line, line.contains("imageData=null"));
+        assertTrue(line, line.contains("uriFields=4"));
+        assertTrue(line, line.contains("uriSet=0"));
+        assertTrue(line, line.contains("filled=1/7"));
+        assertTrue(line, line.contains("uris=[]"));
+        assertFalse(line, line.contains("attachment-id"));
+    }
+
+    /** An attachment shape with no video field at all, which no message fixture can carry under the real name. */
+    private static final class NoVideoAttachment {
+        public EphemeralMediaData A06 = EphemeralMediaData.viewOnce();
+        public String A0C = "opaque";
+    }
+
+    @Test public void anAttachmentWithNoVideoFieldReadsAbsent() throws Exception {
+        MediaDiagnostics.Probe probe = MediaDiagnostics.probe(new NoVideoAttachment());
+        assertEquals("absent", probe.videoField);
+        assertEquals("na", probe.videoData);
+        assertEquals(-1, probe.uriFields);
+        assertEquals("present", probe.ephemeralField);
+        assertEquals("present", probe.ephemeralData);
+        assertEquals("absent", probe.audioData);
+        assertEquals("absent", probe.imageData);
+        assertFalse(probe.video);
+        assertEquals(2, probe.filledRefs);
+        assertEquals(2, probe.totalRefs);
+    }
+
+    /** A video whose data is there but whose addresses are not yet: the hydration-timing case. */
+    @Test public void aVideoWithNoAddressesSetCountsZero() {
+        enable();
+        MediaDiagnostics.observe(Message.with(Attachment.video(new VideoData((Uri) null))));
+        String line = lines.get(0);
+        assertTrue(line, line.contains("video=yes"));
+        assertTrue(line, line.contains("videoData=present"));
+        assertTrue(line, line.contains("uriFields=4"));
+        assertTrue(line, line.contains("uriSet=0"));
+        assertTrue(line, line.contains("uris=[]"));
     }
 
     @Test public void neverLeaksTheAddressOrItsSecrets() {
@@ -87,6 +157,10 @@ public class MediaDiagnosticsTest {
         assertTrue(lines.get(0), lines.get(0).contains("attachments=0"));
         assertTrue(lines.get(0), lines.get(0).contains("video=no"));
         assertTrue(lines.get(0), lines.get(0).contains("ephemeral=absent"));
+        assertTrue(lines.get(0), lines.get(0).contains("videoField=na"));
+        assertTrue(lines.get(0), lines.get(0).contains("videoData=na"));
+        assertTrue(lines.get(0), lines.get(0).contains("uriFields=na"));
+        assertTrue(lines.get(0), lines.get(0).contains("filled=na"));
         assertTrue(lines.get(0), lines.get(0).contains("uris=[]"));
     }
 
@@ -95,6 +169,8 @@ public class MediaDiagnosticsTest {
         MediaDiagnostics.observe(Message.with(Attachment.video(new VideoData(Uri.parse(PLAYABLE)))));
         assertTrue(lines.get(0), lines.get(0).contains("video=yes"));
         assertTrue(lines.get(0), lines.get(0).contains("ephemeral=absent"));
+        assertTrue(lines.get(0), lines.get(0).contains("ephemeralField=present"));
+        assertTrue(lines.get(0), lines.get(0).contains("ephemeralData=null"));
     }
 
     @Test public void redactsFileAndDashShapes() {

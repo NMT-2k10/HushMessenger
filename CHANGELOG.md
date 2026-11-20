@@ -36,6 +36,8 @@
 
 ### Changed and fixed
 
+- The `Media diagnostics` line is now format v2. Alongside what v1 said, it says for the video and the view-once marker whether the field itself is missing from the attachment or only empty, how many address fields the video's class declares against how many are set, and how many of the attachment's fields hold anything at all — the distinctions a first real view-once arrival needed, since v1 read it as a video-less message and couldn't say why. Still states and counts only: no field value is ever written.
+
 - A clone made by `Clone install under another package name` now declares the two permissions every patched Meta app shares under the clone's own package name instead of the shared `app.hushfacebook` names, in its manifest and in the code that loads them by name. The shared names are only shared while every patched app is signed with one key, so a clone signed with any other key — built in Morphe Desktop against a copy installed from Morphe Manager, or a CI build against either — was refused with `INSTALL_FAILED_DUPLICATE_PERMISSION` and couldn't be installed at all. Declarations, requests and component guards move together and every protection level stays `signature`; nothing is removed. The copy can no longer share data with your other Meta apps, which the patch's description now says. A clone and the original still can't be updated with each other's builds.
 
 - TalkBack stops treating the help lines and dividers in `Quick setups` as buttons. Each one was set up to catch a press and hold, so a screen reader stopped on every line and on unnamed, one pixel tall dividers. A press and hold anywhere on the section still hides it.
