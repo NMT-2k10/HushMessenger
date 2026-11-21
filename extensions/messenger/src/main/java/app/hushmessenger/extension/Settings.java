@@ -1361,7 +1361,12 @@ public final class Settings {
         if (forVault) {
             MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
             if (read == null) INCOMING_VAULT_MEDIA.remove();
-            else INCOMING_VAULT_MEDIA.set(read);
+            else {
+                INCOMING_VAULT_MEDIA.set(read);
+                VaultDiag.extracted("notification",
+                    read.found == null ? read.shapeKind : read.found.kind,
+                    read.found == null ? 0 : read.found.addresses.length);
+            }
         } else INCOMING_VAULT_MEDIA.remove();
     }
 
@@ -1392,8 +1397,11 @@ public final class Settings {
         MessageLogAttachment.VaultRead vaultRead = takeIncomingVaultMedia();
         HiddenWords.received(text, id);
         if (wouldUse(MessageLog.KEY)) MessageLog.record(text, thread, id, media);
-        if (wouldUse(Vault72h.KEY) && !(vaultRead != null && vaultRead.ephemeral)) {
-            Vault72h.record(text, thread, id, Vault72h.SOURCE_NOTIFICATION,
+        if (wouldUse(Vault72h.KEY)) {
+            VaultDiag.featureEnabled();
+            VaultDiag.hook("notification");
+            if (vaultRead != null && vaultRead.ephemeral) VaultDiag.filtered("view_once");
+            else Vault72h.record(text, thread, id, Vault72h.SOURCE_NOTIFICATION,
                 vaultRead == null ? null : vaultRead.found,
                 vaultRead == null ? null : vaultRead.shapeKind,
                 vaultRead == null ? "" : vaultRead.diag);
@@ -1413,8 +1421,14 @@ public final class Settings {
     public static void vaultMediaResolved(String id, Object message) {
         if (id == null || id.isEmpty() || message == null || !wouldUse(Vault72h.KEY)) return;
         try {
+            VaultDiag.hook("bridge_entry");
             MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
-            if (read.ephemeral) return;
+            if (read.ephemeral) {
+                VaultDiag.filtered("view_once");
+                return;
+            }
+            VaultDiag.extracted("bridge_entry", read.found == null ? null : read.found.kind,
+                read.found == null ? 0 : read.found.addresses.length);
             Vault72h.attachFound(id, read.found, read.diag);
         } catch (Throwable failure) {
             hookFailedPrivately(Vault72h.KEY, "Can't take a message's resolved media for the vault", failure);
@@ -1441,7 +1455,10 @@ public final class Settings {
     private static void vaultResolvedData(String kind, String id, Object data) {
         if (id == null || id.isEmpty() || data == null || !wouldUse(Vault72h.KEY)) return;
         try {
+            VaultDiag.hook("bridge_return");
             MessageLogAttachment.Resolved resolved = MessageLogAttachment.resolved(kind, data);
+            VaultDiag.extracted("bridge_return", resolved.found == null ? null : resolved.found.kind,
+                resolved.found == null ? 0 : resolved.found.addresses.length);
             Vault72h.attachFound(id, resolved.found, resolved.diag);
         } catch (Throwable failure) {
             hookFailedPrivately(Vault72h.KEY, "Can't take a message's resolved media for the vault", failure);
@@ -2236,7 +2253,10 @@ public final class Settings {
         if (text == null) return text;
         // A row in an open chat is the vault's second surface: with no send time to judge by, a row only ever
         // fills in an entry the arrival capture already made, never starts one of its own.
-        if (wouldUse(Vault72h.KEY)) Vault72h.recordRow(text, messageId, null, 0, 0, -1, -1);
+        if (wouldUse(Vault72h.KEY)) {
+            VaultDiag.hook("row");
+            Vault72h.recordRow(text, messageId, null, 0, 0, -1, -1);
+        }
         if (wouldUse("keep_unsent") && isKeptUnsent(messageId)) return HiddenWords.mask("[unsent] " + text);
         return HiddenWords.mask(text);
     }
@@ -2345,6 +2365,7 @@ public final class Settings {
             // The vault takes the row's words as they are shown, before any masking: a fresh row is a message
             // arriving in the chat the user is looking at, which is the arrival the notification hook can miss.
             if (wouldUse(Vault72h.KEY)) {
+                VaultDiag.hook("row");
                 Vault72h.recordRow(text, messageId, threadingId, timestamp, senderId, contentType, contentSubtype);
             }
             // Rows reach here for hidden words alone, and nothing below is this control's business then.
@@ -2396,7 +2417,10 @@ public final class Settings {
     public static boolean unsentRecall(String messageId) {
         try {
             if (wouldUse(MessageLog.KEY)) MessageLog.markUnsent(messageId);
-            if (wouldUse(Vault72h.KEY)) Vault72h.markRecalled(messageId);
+            if (wouldUse(Vault72h.KEY)) {
+                VaultDiag.hook("recall");
+                Vault72h.markRecalled(messageId);
+            }
             if (messageId == null || messageId.isEmpty() || !wouldUse("keep_unsent")) return false;
             if (!ROW_TEXT.containsKey(messageId)) {
                 try {

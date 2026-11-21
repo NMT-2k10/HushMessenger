@@ -458,7 +458,13 @@ public final class Vault72h {
 
     private static SQLiteDatabase db(Context context) {
         synchronized (LOCK) {
-            if (helper == null) helper = new Helper(context);
+            if (helper == null) {
+                helper = new Helper(context);
+                SQLiteDatabase opened = helper.getWritableDatabase();
+                VaultDiag.init("db=" + DB_NAME + " version=" + opened.getVersion());
+                VaultDiag.databaseOpen("db=" + DB_NAME + " version=" + opened.getVersion());
+                return opened;
+            }
             return helper.getWritableDatabase();
         }
     }
@@ -563,7 +569,10 @@ public final class Vault72h {
                           String sender, String chat, long now, String shapeKind, String diag) {
         Context context = Settings.appContext;
         if (context == null) return -1;
-        if (found != null && MessageLogAttachment.EPHEMERAL.equals(found.kind)) return -1;
+        if (found != null && MessageLogAttachment.EPHEMERAL.equals(found.kind)) {
+            VaultDiag.filtered("view_once");
+            return -1;
+        }
         boolean attachment = text == null;
         String words = attachment ? "" : MessageLog.clip(text, MAX_TEXT_CHARS);
         String keptThread = MessageLog.clip(thread == null ? "" : thread, MAX_THREAD_CHARS);
@@ -621,9 +630,11 @@ public final class Vault72h {
                 return rowId;
             }
         } catch (SQLiteFullException full) {
+            VaultDiag.insertFailed("SQLiteFullException");
             Settings.hookFailedPrivately(KEY, "The phone's storage is full, so a message couldn't be archived", full);
             return -1;
         } catch (Throwable failure) {
+            VaultDiag.insertFailed(failure.getClass().getSimpleName());
             Settings.hookFailedPrivately(KEY, "Can't archive a message in the vault", failure);
             return -1;
         }
@@ -668,9 +679,11 @@ public final class Vault72h {
                 return rowId;
             }
         } catch (SQLiteFullException full) {
+            VaultDiag.insertFailed("SQLiteFullException");
             Settings.hookFailedPrivately(KEY, "The phone's storage is full, so a message couldn't be archived", full);
             return -1;
         } catch (Throwable failure) {
+            VaultDiag.insertFailed(failure.getClass().getSimpleName());
             Settings.hookFailedPrivately(KEY, "Can't archive a chat row in the vault", failure);
             return -1;
         }
@@ -775,7 +788,10 @@ public final class Vault72h {
                 String thread, kind, status, oldDiag;
                 try {
                     if (!row.moveToFirst()) {
-                        if (found == null) return false;
+                        if (found == null) {
+                            VaultDiag.filtered("no_matching_entry");
+                            return false;
+                        }
                         String shaped = kindForShape(found.kind);
                         if (shaped == null) return false;
                         Cursor candidates = db.query("entries",
@@ -785,7 +801,11 @@ public final class Vault72h {
                                 String.valueOf(now)},
                             null, null, null, "2");
                         try {
-                            if (candidates.getCount() != 1 || !candidates.moveToFirst()) return false;
+                            if (candidates.getCount() != 1 || !candidates.moveToFirst()) {
+                                VaultDiag.filtered(candidates.getCount() == 0
+                                    ? "no_candidate" : "ambiguous_candidate");
+                                return false;
+                            }
                             rowId = candidates.getLong(0);
                             thread = candidates.getString(1);
                             kind = candidates.getString(2);
@@ -920,7 +940,11 @@ public final class Vault72h {
             values.put("media_status", found != null ? MEDIA_PENDING
                 : attachment || mediaShaped ? MEDIA_NO_ADDRESS : MEDIA_NONE);
             values.put("diag", diag);
-            return db.insertOrThrow("entries", null, values);
+            long inserted = db.insertOrThrow("entries", null, values);
+            VaultDiag.encryptSuccess();
+            VaultDiag.dedup("inserted");
+            VaultDiag.insertSuccess(inserted);
+            return inserted;
         }
         // Merge into the existing entry.
         Cursor row = db.query("entries",
@@ -928,7 +952,10 @@ public final class Vault72h {
                 "msg_id", "dedup", "diag"},
             "row_id=?", new String[] {String.valueOf(existing)}, null, null, null, "1");
         try {
-            if (!row.moveToFirst()) return existing;
+            if (!row.moveToFirst()) {
+                VaultDiag.dedup("already_present");
+                return existing;
+            }
             String oldWords = openText(row.getBlob(0));
             String status = row.getString(2);
             ContentValues values = new ContentValues();
@@ -969,6 +996,7 @@ public final class Vault72h {
                 values.put("diag", diag);
             }
             if (values.size() > 0) db.update("entries", values, "row_id=?", new String[] {String.valueOf(existing)});
+            VaultDiag.dedup(values.containsKey("edited_from") ? "edited" : "merged");
             return existing;
         } finally { row.close(); }
     }
