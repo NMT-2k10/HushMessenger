@@ -386,7 +386,8 @@ final class MessageLogAttachment {
      * whose form only Messenger's parser accepts; the resolver's output carries plain addresses instead: the
      * Uris on the data object, on its nested address holders, and on the media resource it wraps. Those
      * addresses are the ones Messenger itself was about to load for this message, so the vault takes the forms
-     * it can open — a file already on the phone first, then https, then http — and names every scheme it saw
+     * it can open — a file already on the phone first, then https, then the app's own media store, then
+     * http — and names every scheme it saw
      * in the fingerprint, so a form it cannot open is identified by its scheme rather than guessed at. A
      * resource that declares itself view-once is never read.
      */
@@ -411,13 +412,14 @@ final class MessageLogAttachment {
         return new Resolved(new Found(ordered.toArray(new String[0]), kind), diag);
     }
 
-    /** Resolved addresses open local files first, then encrypted web, then plain web — the order they can fail in. */
+    /** Resolved addresses open local files first, then encrypted web, then the media store, then plain web. */
     private static int resolvedRank(String address) {
-        if (address.startsWith("http://")) return 2;
+        if (address.startsWith("http://")) return 3;
         String form = addressForm(address);
         if ("file".equals(form) || "content".equals(form) || "path".equals(form)) return 0;
         if ("https".equals(form)) return 1;
-        return 3;
+        if ("msys".equals(form)) return 2;
+        return 4;
     }
 
     /** Every openable address on one resolved data object, and the scheme of every address seen on it. */
@@ -468,7 +470,7 @@ final class MessageLogAttachment {
         schemes.add(schemeName(address));
         String form = addressForm(address);
         if ("https".equals(form) || "file".equals(form) || "content".equals(form) || "path".equals(form)
-            || address.startsWith("http://")) {
+            || "msys".equals(form) || address.startsWith("http://")) {
             addresses.add(address);
         }
     }
@@ -518,7 +520,7 @@ final class MessageLogAttachment {
             Object held = field.get(attachment);
             if (!(held instanceof Map)) continue;
             for (Object value : ((Map<?, ?>) held).values()) {
-                String address = signed(value);
+                String address = vaultAddress(value);
                 if (address != null) return address;
             }
         }
@@ -584,6 +586,7 @@ final class MessageLogAttachment {
         if (address.startsWith("https://")) return "https";
         if (address.startsWith("file://") || address.startsWith("file:")) return "file";
         if (address.startsWith("content://")) return "content";
+        if (address.startsWith("msys://")) return "msys";
         if (address.startsWith("/")) return "path";
         return null;
     }
@@ -677,9 +680,11 @@ final class MessageLogAttachment {
      * holds (it prepends file:// itself), and in an encrypted chat that local form is often the only one there
      * is — the decrypted photo sits in Messenger's own cache while no web address is handed over at all. The
      * vault therefore takes every form it can open — a file or content address on the phone first, since that
-     * file is already fetched and decrypted, then web addresses, biggest first — and the fetch tries each in
-     * turn. A string of any other form (a reference only Messenger's secure parser can resolve) is counted in
-     * [forms] for the fingerprint but is not an address the vault can use.
+     * file is already fetched and decrypted, then the size's own addresses, biggest first: its web address
+     * and its media-store reference, the reference being how an encrypted chat names the decrypted file in
+     * Messenger's own store, which the app opens through its content resolver — and the fetch tries each in
+     * turn. A string of any other form is counted in [forms] for the fingerprint but is not an address the
+     * vault can use.
      */
     private static List<String> imageCandidates(Object image, java.util.Set<String> forms, int[] nulls)
         throws Exception {
@@ -721,7 +726,7 @@ final class MessageLogAttachment {
                 String form = addressForm(raw);
                 if (forms != null) forms.add(form);
                 if (!"https".equals(form) && !"file".equals(form) && !"content".equals(form)
-                    && !"path".equals(form)) continue;
+                    && !"path".equals(form) && !"msys".equals(form)) continue;
                 entries.add(new Object[] {raw.trim(), area(value), form});
             }
         }
@@ -743,7 +748,10 @@ final class MessageLogAttachment {
 
     /**
      * The form of an address string a message carried: "https" for a web address, "file" or "content" for an
-     * address on the phone, "path" for a bare absolute path to a file on the phone, "other" for anything else.
+     * address on the phone, "path" for a bare absolute path to a file on the phone, "msys" for a reference
+     * into Messenger's own media store — the form an encrypted chat's media actually arrives in, which the
+     * app itself opens through its content resolver when it needs the file behind a message — and "other"
+     * for anything else.
      */
     private static String addressForm(String raw) {
         if (raw == null) return "other";
@@ -751,13 +759,18 @@ final class MessageLogAttachment {
         if (text.startsWith("https://")) return "https";
         if (text.startsWith("file:")) return "file";
         if (text.startsWith("content://")) return "content";
+        if (text.startsWith("msys://")) return "msys";
         if (text.startsWith("/")) return "path";
         return "other";
     }
 
-    /** Local forms rank before web ones: a file already on the phone needs no fetching and cannot expire. */
+    /**
+     * Local forms rank before the rest: a file already on the phone needs no fetching and cannot expire.
+     * A media-store reference ranks with the web address of the same size — each names the same picture at
+     * that size, one through the app's own store and one through the network, and the bigger size wins.
+     */
     private static int formRank(String form) {
-        return "https".equals(form) ? 1 : 0;
+        return "https".equals(form) || "msys".equals(form) ? 1 : 0;
     }
 
     /**
@@ -769,7 +782,8 @@ final class MessageLogAttachment {
         if (held == null) return null;
         String raw = held.toString();
         String form = addressForm(raw);
-        if ("https".equals(form) || "file".equals(form) || "content".equals(form) || "path".equals(form)) {
+        if ("https".equals(form) || "file".equals(form) || "content".equals(form) || "path".equals(form)
+            || "msys".equals(form)) {
             return raw.trim();
         }
         return null;

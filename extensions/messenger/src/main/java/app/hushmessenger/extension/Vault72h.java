@@ -746,10 +746,19 @@ public final class Vault72h {
         }
     }
 
+    /** How long after an entry was taken a resolution delivery may still be matched to it by kind alone. */
+    private static final long RESOLUTION_MATCH_WINDOW_MS = 15 * 60_000L;
+
     /**
      * Attaches [found] to the entry for [id] on the calling thread and starts its fetch. Returns false when no
-     * live entry carries that id — resolution only enriches what a capture already archived — or when the
+     * live entry is the delivery's — resolution only enriches what a capture already archived — or when the
      * media is view-once, which the vault never takes on any surface.
+     *
+     * The match is by the message's own id first. One delivery in an encrypted chat can carry an id spelled
+     * differently from the one the entry was archived under — the surfaces name a message in their own ways —
+     * so a delivery whose id matches nothing falls back to the entry it must mean: the one live entry of the
+     * same kind, still without its media, taken within {@link #RESOLUTION_MATCH_WINDOW_MS}. Two such entries
+     * could be either one's, and the delivery is dropped rather than filed under the wrong message.
      */
     static boolean attachFoundNow(String id, MessageLogAttachment.Found found, String diag, long now) {
         Context context = Settings.appContext;
@@ -759,17 +768,38 @@ public final class Vault72h {
             synchronized (LOCK) {
                 SQLiteDatabase db = db(context);
                 purgeLocked(context, db, now);
-                Cursor row = db.query("entries", new String[] {"row_id", "thread", "kind", "media_status", "diag"},
+                Cursor row = db.query("entries", new String[] {"row_id", "thread", "kind", "media_status", "diag",
+                        "msg_id"},
                     "msg_id=? AND expires_at>?", new String[] {id, String.valueOf(now)}, null, null, null, "1");
                 long rowId;
                 String thread, kind, status, oldDiag;
                 try {
-                    if (!row.moveToFirst()) return false;
-                    rowId = row.getLong(0);
-                    thread = row.getString(1);
-                    kind = row.getString(2);
-                    status = row.getString(3);
-                    oldDiag = row.getString(4);
+                    if (!row.moveToFirst()) {
+                        if (found == null) return false;
+                        String shaped = kindForShape(found.kind);
+                        if (shaped == null) return false;
+                        Cursor candidates = db.query("entries",
+                            new String[] {"row_id", "thread", "kind", "media_status", "diag", "msg_id"},
+                            "kind=? AND media_status<>? AND received_at>=? AND expires_at>?",
+                            new String[] {shaped, MEDIA_STORED, String.valueOf(now - RESOLUTION_MATCH_WINDOW_MS),
+                                String.valueOf(now)},
+                            null, null, null, "2");
+                        try {
+                            if (candidates.getCount() != 1 || !candidates.moveToFirst()) return false;
+                            rowId = candidates.getLong(0);
+                            thread = candidates.getString(1);
+                            kind = candidates.getString(2);
+                            status = candidates.getString(3);
+                            oldDiag = candidates.getString(4);
+                            id = candidates.getString(5);
+                        } finally { candidates.close(); }
+                    } else {
+                        rowId = row.getLong(0);
+                        thread = row.getString(1);
+                        kind = row.getString(2);
+                        status = row.getString(3);
+                        oldDiag = row.getString(4);
+                    }
                 } finally { row.close(); }
                 // A later surface's fingerprint replaces the arrival one: what the thread view's resolution
                 // saw is strictly more informative than what the notification-time message carried.

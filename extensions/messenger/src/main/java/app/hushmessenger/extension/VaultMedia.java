@@ -19,6 +19,9 @@ final class VaultMedia {
     /** Opens the stream at an address. Tests swap this in to answer without a network. */
     static java.util.function.Function<String, InputStream> opener = VaultMedia::openRemote;
 
+    /** Opens a media-store reference through the app's own content resolver. Tests swap this in too. */
+    static java.util.function.Function<String, InputStream> providerOpener = VaultMedia::openProvider;
+
     /**
      * Which of [found]'s addresses holds the file itself. An address on the phone — a file or content address
      * Messenger already fetched and decrypted — is the file itself and needs no asking; otherwise the message
@@ -33,16 +36,24 @@ final class VaultMedia {
 
     /**
      * [found]'s addresses in the order the vault tries them: addresses on the phone first (already fetched
-     * and decrypted, and they cannot expire), then the rest in the order the reader ranked them. The fetch
-     * walks this list until one address yields the whole file, so one dead address never decides an entry.
+     * and decrypted, and they cannot expire), then web addresses, then references into Messenger's own media
+     * store, then anything else in the order the reader ranked them. The fetch walks this list until one
+     * address yields the whole file, so one dead address never decides an entry.
      */
     static java.util.List<String> ordered(MessageLogAttachment.Found found) {
         java.util.List<String> local = new java.util.ArrayList<>();
-        java.util.List<String> remote = new java.util.ArrayList<>();
+        java.util.List<String> web = new java.util.ArrayList<>();
+        java.util.List<String> store = new java.util.ArrayList<>();
+        java.util.List<String> rest = new java.util.ArrayList<>();
         for (String address : found.addresses) {
-            (isLocal(address) ? local : remote).add(address);
+            if (isLocal(address)) local.add(address);
+            else if (address.startsWith("https://")) web.add(address);
+            else if (isProvider(address)) store.add(address);
+            else rest.add(address);
         }
-        local.addAll(remote);
+        local.addAll(web);
+        local.addAll(store);
+        local.addAll(rest);
         return local;
     }
 
@@ -51,9 +62,31 @@ final class VaultMedia {
         return address.startsWith("file:") || address.startsWith("content://") || address.startsWith("/");
     }
 
+    /**
+     * Whether an address is a reference into Messenger's own media store. That is how an encrypted chat
+     * names a message's media: the reference itself is not a file or a web address, and the app resolves it
+     * through its content resolver when it needs the file behind the message — the same way the vault opens
+     * it here.
+     */
+    static boolean isProvider(String address) {
+        return address.startsWith("msys://");
+    }
+
     static InputStream open(String address) {
         if (isLocal(address)) return openLocal(address);
+        if (isProvider(address)) return providerOpener.apply(address);
         return opener.apply(address);
+    }
+
+    /** A stream over a media-store reference, read through the vault's own app's content resolver. */
+    private static InputStream openProvider(String address) {
+        try {
+            android.content.Context context = Settings.appContext;
+            if (context == null) return null;
+            return context.getContentResolver().openInputStream(android.net.Uri.parse(address));
+        } catch (Exception unreadable) {
+            return null;
+        }
     }
 
     /** A stream over a file or content address on the phone, in the vault's own app. Null when it can't be read. */
@@ -87,6 +120,9 @@ final class VaultMedia {
             connection.setInstanceFollowRedirects(true);
             connection.setConnectTimeout(TIMEOUT_MS);
             connection.setReadTimeout(TIMEOUT_MS);
+            // The file itself, unencoded: a transparently decompressed body would arrive longer than the
+            // length its headers announced, and the counted stream below would call a whole file cut short.
+            connection.setRequestProperty("Accept-Encoding", "identity");
             if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
                 connection.disconnect();
                 return null;
@@ -110,7 +146,9 @@ final class VaultMedia {
 
     /**
      * A stream that fails at its end when fewer bytes arrived than [expected] said would — a download cut short
-     * mid-file must never be sealed and reported as the whole video. An unknown length (-1) is taken as it comes.
+     * mid-file must never be sealed and reported as the whole video. More bytes than announced is not a
+     * failure: a body the network decompressed on the way arrives longer than its headers said, and it is
+     * whole at its end all the same. An unknown length (-1) is taken as it comes.
      */
     static InputStream counted(InputStream in, long expected) {
         return new InputStream() {
@@ -134,7 +172,7 @@ final class VaultMedia {
             private void end() throws IOException {
                 if (ended) return;
                 ended = true;
-                if (expected >= 0 && read != expected) {
+                if (expected >= 0 && read < expected) {
                     throw new IOException("the download ended at " + read + " of " + expected + " bytes");
                 }
             }
