@@ -963,6 +963,8 @@ vault_media_unavailable	Medya alınamadı
 vault_media_failed	Medya indirme başarısız oldu
 vault_media_storage_full	Telefonun depolama alanı doluydu
 vault_media_pending	Alınıyor…
+vault_media_no_address	Mesajla birlikte indirilebilir bir kopya gelmedi
+vault_media_not_kept	Bu medya türünü saklama kapalıydı
 vault_open_media	Aç
 vault_close	Kapat
 vault_stats	%1$s mesaj · %2$s geri alındı · %3$s medyası kaydedildi · sonraki kopyanın süresi %4$s doluyor

@@ -963,6 +963,8 @@ vault_media_unavailable	No se pudo obtener el contenido
 vault_media_failed	La descarga del contenido falló
 vault_media_storage_full	El almacenamiento del teléfono estaba lleno
 vault_media_pending	Obteniendo…
+vault_media_no_address	El mensaje no traía una copia descargable
+vault_media_not_kept	La conservación de este tipo de contenido estaba desactivada
 vault_open_media	Abrir
 vault_close	Cerrar
 vault_stats	%1$s mensajes · %2$s anulados · %3$s con contenido guardado · la próxima copia caduca %4$s

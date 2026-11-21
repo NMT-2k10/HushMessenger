@@ -963,6 +963,8 @@ vault_media_unavailable	Không tải được nội dung đa phương tiện
 vault_media_failed	Tải nội dung đa phương tiện thất bại
 vault_media_storage_full	Bộ nhớ điện thoại đã đầy
 vault_media_pending	Đang tải…
+vault_media_no_address	Không có tệp tải về kèm theo tin nhắn
+vault_media_not_kept	Chưa bật giữ loại nội dung này
 vault_open_media	Mở
 vault_close	Đóng
 vault_stats	%1$s tin nhắn · %2$s đã thu hồi · %3$s có nội dung đã lưu · bản sao tiếp theo hết hạn %4$s

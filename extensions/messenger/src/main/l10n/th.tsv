@@ -963,6 +963,8 @@ vault_media_unavailable	ไม่สามารถดึงสื่อได�
 vault_media_failed	การดาวน์โหลดสื่อล้มเหลว
 vault_media_storage_full	พื้นที่เก็บข้อมูลของโทรศัพท์เต็ม
 vault_media_pending	กำลังดึงข้อมูล…
+vault_media_no_address	ข้อความไม่มีสำเนาที่ดาวน์โหลดได้แนบมาด้วย
+vault_media_not_kept	การเก็บสื่อประเภทนี้ถูกปิดไว้
 vault_open_media	เปิด
 vault_close	ปิด
 vault_stats	ข้อความ %1$s รายการ · เรียกคืน %2$s รายการ · บันทึกสื่อแล้ว %3$s รายการ · สำเนาถัดไปหมดอายุ %4$s

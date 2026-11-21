@@ -963,6 +963,8 @@ vault_media_unavailable	無法取得媒體內容
 vault_media_failed	媒體下載失敗
 vault_media_storage_full	手機儲存空間已滿
 vault_media_pending	正在取得…
+vault_media_no_address	這則訊息沒有附可下載的副本
+vault_media_not_kept	此類媒體的保留功能已關閉
 vault_open_media	開啟
 vault_close	關閉
 vault_stats	%1$s 則訊息 · %2$s 則已收回 · %3$s 則已保存媒體 · 下一份副本將於 %4$s 到期
