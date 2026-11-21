@@ -3,7 +3,7 @@ package app.hushmessenger.patches.controls
 import app.morphe.patcher.patch.PatchException
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.Instruction
-import com.android.tools.smali.dexlib2.iface.instruction.Instruction35c
+import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction
@@ -60,7 +60,7 @@ class VaultMediaBridgeTest {
         val holder = code[returnAt - 4] as TwoRegisterInstruction
         val branch = code[returnAt - 3] as OneRegisterInstruction
         val read = code[returnAt - 2] as TwoRegisterInstruction
-        val call = code[returnAt - 1] as Instruction35c
+        val call = code[returnAt - 1] as FiveRegisterInstruction
         assertEquals(Opcode.MOVE_OBJECT_FROM16, copy.opcode)
         assertEquals(returned, copy.registerB, "the result is copied out of the return's register")
         assertEquals(Opcode.MOVE_OBJECT_FROM16, holder.opcode)
