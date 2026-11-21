@@ -149,14 +149,17 @@ final class MessageLogAttachment {
                         continue;
                     }
                     Object audio = only(attachment, AUDIO_DATA);
-                    String audioAddress = audio == null ? null : signed(only(audio, URI));
+                    String audioAddress = audio == null ? null : vaultAddress(only(audio, URI));
                     if (audioAddress != null) return new Found(audioAddress, AUDIO);
                     Object video = only(attachment, VIDEO_DATA);
-                    String[] videoAddresses = video == null ? null : addressesOn(video);
+                    String[] videoAddresses = video == null ? null : addressesOnVault(video);
                     if (videoAddresses != null) return new Found(videoAddresses, VIDEO);
                     Object image = only(attachment, IMAGE_DATA);
-                    String imageAddress = image == null ? null : largest(image);
-                    if (imageAddress != null) return new Found(imageAddress, PHOTO);
+                    List<String> imageAddresses = image == null ? null
+                        : imageCandidates(image, null, null);
+                    if (imageAddresses != null && !imageAddresses.isEmpty()) {
+                        return new Found(imageAddresses.toArray(new String[0]), PHOTO);
+                    }
                 }
             }
         } catch (Throwable unreadable) {
@@ -220,25 +223,32 @@ final class MessageLogAttachment {
                         else if (video != null) shape = VIDEO;
                         else if (image != null) shape = PHOTO;
                     }
+                    java.util.Set<String> imageForms = new java.util.TreeSet<>();
+                    int[] imageNulls = {0};
+                    List<String> imageAddresses = image == null ? null
+                        : imageCandidates(image, imageForms, imageNulls);
                     if (attachments == 1) {
                         diag.append("att=1");
-                        if (image != null) diag.append(" img=1 maps=").append(mapSizes(image));
+                        if (image != null) {
+                            diag.append(" img=1 maps=").append(mapSizes(image));
+                            diag.append(" asch=").append(imageForms.isEmpty() ? "-"
+                                : String.join("+", imageForms));
+                            if (imageNulls[0] > 0) diag.append(" anull=").append(imageNulls[0]);
+                        }
                         if (video != null) diag.append(" vid=1");
                         if (audio != null) diag.append(" aud=1");
                     }
                     if (found == null) {
-                        String audioAddress = audio == null ? null : signed(only(audio, URI));
+                        String audioAddress = audio == null ? null : vaultAddress(only(audio, URI));
                         if (audioAddress != null) found = new Found(audioAddress, AUDIO);
                         else {
-                            String[] videoAddresses = video == null ? null : addressesOn(video);
+                            String[] videoAddresses = video == null ? null : addressesOnVault(video);
                             if (videoAddresses != null) found = new Found(videoAddresses, VIDEO);
-                            else {
-                                String imageAddress = image == null ? null : largest(image);
-                                if (imageAddress != null) found = new Found(imageAddress, PHOTO);
-                                else {
-                                    String mapped = mappedAddress(item, shape);
-                                    if (mapped != null && shape != null) found = new Found(mapped, shape);
-                                }
+                            else if (imageAddresses != null && !imageAddresses.isEmpty()) {
+                                found = new Found(imageAddresses.toArray(new String[0]), PHOTO);
+                            } else {
+                                String mapped = mappedAddress(item, shape);
+                                if (mapped != null && shape != null) found = new Found(mapped, shape);
                             }
                         }
                     }
@@ -261,16 +271,23 @@ final class MessageLogAttachment {
         }
     }
 
-    /** The entry counts of an image's size maps, as "a,b" — how much of the photo the message itself carried. */
+    /**
+     * The entry counts of an image's size maps, as "a,b" — how much of the photo the message itself carried.
+     * A map the message didn't carry at all reads "n"; one whose entries couldn't be read reads "x".
+     */
     private static String mapSizes(Object image) throws Exception {
         StringBuilder sizes = new StringBuilder();
         for (Field field : image.getClass().getDeclaredFields()) {
             if (!IMAGE_MAP.equals(field.getType().getName())) continue;
             field.setAccessible(true);
             Object map = field.get(image);
-            Object held = map == null ? null : only(map, Map.class);
             if (sizes.length() > 0) sizes.append(',');
-            sizes.append(held instanceof Map ? ((Map<?, ?>) held).size() : -1);
+            if (map == null) {
+                sizes.append('n');
+                continue;
+            }
+            Object held = only(map, Map.class);
+            sizes.append(held instanceof Map ? String.valueOf(((Map<?, ?>) held).size()) : "x");
         }
         return sizes.length() == 0 ? "-" : sizes.toString();
     }
@@ -350,6 +367,7 @@ final class MessageLogAttachment {
         if (address.startsWith("https://")) return "https";
         if (address.startsWith("file://") || address.startsWith("file:")) return "file";
         if (address.startsWith("content://")) return "content";
+        if (address.startsWith("/")) return "path";
         return null;
     }
 
@@ -426,6 +444,49 @@ final class MessageLogAttachment {
     private static String largest(Object image) throws Exception {
         String best = null;
         long widest = -1;
+        for (Object[] entry : imageEntries(image, null, null)) {
+            if (!"https".equals(entry[2])) continue;
+            long area = (Long) entry[1];
+            if (area <= widest) continue;
+            widest = area;
+            best = (String) entry[0];
+        }
+        return best;
+    }
+
+    /**
+     * Every fetchable address on [image], best first, for the vault. Messenger's own reader treats the strings
+     * in a photo's size maps as more than web addresses: a string starting with "/" is a file the app already
+     * holds (it prepends file:// itself), and in an encrypted chat that local form is often the only one there
+     * is — the decrypted photo sits in Messenger's own cache while no web address is handed over at all. The
+     * vault therefore takes every form it can open — a file or content address on the phone first, since that
+     * file is already fetched and decrypted, then web addresses, biggest first — and the fetch tries each in
+     * turn. A string of any other form (a reference only Messenger's secure parser can resolve) is counted in
+     * [forms] for the fingerprint but is not an address the vault can use.
+     */
+    private static List<String> imageCandidates(Object image, java.util.Set<String> forms, int[] nulls)
+        throws Exception {
+        List<Object[]> entries = imageEntries(image, forms, nulls);
+        entries.sort((a, b) -> {
+            int byForm = Integer.compare(formRank((String) a[2]), formRank((String) b[2]));
+            return byForm != 0 ? byForm : Long.compare((Long) b[1], (Long) a[1]);
+        });
+        List<String> addresses = new ArrayList<>();
+        for (Object[] entry : entries) {
+            String address = (String) entry[0];
+            if (!addresses.contains(address)) addresses.add(address);
+        }
+        return addresses;
+    }
+
+    /**
+     * The usable (address, area, form) triples in [image]'s size maps. Entries whose string is missing or
+     * empty are counted in [nulls]; every form seen, usable or not, is named in [forms]. Neither the address
+     * nor any other value is ever written anywhere by this walk — only the caller decides what to fetch.
+     */
+    private static List<Object[]> imageEntries(Object image, java.util.Set<String> forms, int[] nulls)
+        throws Exception {
+        List<Object[]> entries = new ArrayList<>();
         for (Field field : image.getClass().getDeclaredFields()) {
             if (!IMAGE_MAP.equals(field.getType().getName())) continue;
             field.setAccessible(true);
@@ -435,15 +496,79 @@ final class MessageLogAttachment {
             if (!(sizes instanceof Map)) continue;
             for (Object value : ((Map<?, ?>) sizes).values()) {
                 if (value == null || !IMAGE_URL.equals(value.getClass().getName())) continue;
-                String address = signed(only(value, String.class.getName()));
-                if (address == null) continue;
-                long area = area(value);
-                if (area <= widest) continue;
-                widest = area;
-                best = address;
+                String raw = imageString(value);
+                if (raw == null) {
+                    if (nulls != null) nulls[0]++;
+                    continue;
+                }
+                String form = addressForm(raw);
+                if (forms != null) forms.add(form);
+                if (!"https".equals(form) && !"file".equals(form) && !"content".equals(form)
+                    && !"path".equals(form)) continue;
+                entries.add(new Object[] {raw.trim(), area(value), form});
             }
         }
-        return best;
+        return entries;
+    }
+
+    /** The one string an image entry carries — its address, in whatever form this chat handed it over. */
+    private static String imageString(Object imageUrl) throws Exception {
+        for (Field field : imageUrl.getClass().getDeclaredFields()) {
+            if (field.getType() != String.class) continue;
+            field.setAccessible(true);
+            Object held = field.get(imageUrl);
+            if (held == null) continue;
+            String text = ((String) held).trim();
+            if (!text.isEmpty()) return text;
+        }
+        return null;
+    }
+
+    /**
+     * The form of an address string a message carried: "https" for a web address, "file" or "content" for an
+     * address on the phone, "path" for a bare absolute path to a file on the phone, "other" for anything else.
+     */
+    private static String addressForm(String raw) {
+        if (raw == null) return "other";
+        String text = raw.trim();
+        if (text.startsWith("https://")) return "https";
+        if (text.startsWith("file:")) return "file";
+        if (text.startsWith("content://")) return "content";
+        if (text.startsWith("/")) return "path";
+        return "other";
+    }
+
+    /** Local forms rank before web ones: a file already on the phone needs no fetching and cannot expire. */
+    private static int formRank(String form) {
+        return "https".equals(form) ? 1 : 0;
+    }
+
+    /**
+     * An address the vault may fetch from what a message carried, or null when it is of a form the vault
+     * cannot open. Wider than {@link #signed}: the vault may also copy a file Messenger already fetched and
+     * decrypted into its own storage, which is the only form some chats ever hand over.
+     */
+    private static String vaultAddress(Object held) {
+        if (held == null) return null;
+        String raw = held.toString();
+        String form = addressForm(raw);
+        if ("https".equals(form) || "file".equals(form) || "content".equals(form) || "path".equals(form)) {
+            return raw.trim();
+        }
+        return null;
+    }
+
+    /** Every address [video] carries that the vault may fetch, local forms first, or null when it has none. */
+    private static String[] addressesOnVault(Object video) throws Exception {
+        List<String> found = new ArrayList<>();
+        for (Field field : video.getClass().getDeclaredFields()) {
+            if (!URI.equals(field.getType().getName())) continue;
+            field.setAccessible(true);
+            String address = vaultAddress(field.get(video));
+            if (address != null && !found.contains(address)) found.add(address);
+        }
+        found.sort((a, b) -> Integer.compare(formRank(addressForm(a)), formRank(addressForm(b))));
+        return found.isEmpty() ? null : found.toArray(new String[0]);
     }
 
     /** The pixels of the picture at an address, from the two numbers beside it, or 0 when it doesn't say. */

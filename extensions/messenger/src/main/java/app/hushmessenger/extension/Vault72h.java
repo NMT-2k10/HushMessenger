@@ -926,8 +926,8 @@ public final class Vault72h {
                     setMediaStatus(context, rowId, MEDIA_STORED, name, found.kind, file.length());
                     return;
                 }
-                String address = VaultMedia.pick(found);
-                if (address == null) {
+                java.util.List<String> candidates = VaultMedia.ordered(found);
+                if (candidates.isEmpty()) {
                     setMediaStatus(context, rowId, MEDIA_UNAVAILABLE, "", found.kind, 0);
                     return;
                 }
@@ -937,29 +937,38 @@ public final class Vault72h {
                     return;
                 }
                 File target = new File(dir, name);
-                try (InputStream in = VaultMedia.open(address)) {
-                    if (in == null) {
-                        setMediaStatus(context, rowId, MEDIA_UNAVAILABLE, "", found.kind, 0);
+                // A message can carry several addresses for the same file — sizes of one photo, a video
+                // and its thumbnail — and any one of them can be dead, expired or cut short. The entry is
+                // only given up on when every address has had its chance.
+                Throwable lastFailure = null;
+                for (String address : candidates) {
+                    try (InputStream in = VaultMedia.open(address)) {
+                        if (in == null) continue;
+                        long plain = sealStream(in, target);
+                        if (plain <= 0) {
+                            target.delete();
+                            continue;
+                        }
+                        // The entry may have been wiped (Clear Vault) or purged while this fetch was in
+                        // flight; a sealed file for a gone entry would outlive the wipe as an orphan, so
+                        // drop it instead of reporting it stored.
+                        synchronized (LOCK) {
+                            if (!entryExistsLocked(db(context), rowId)) { target.delete(); return; }
+                        }
+                        setMediaStatus(context, rowId, MEDIA_STORED, name, found.kind, target.length());
                         return;
-                    }
-                    long plain = sealStream(in, target);
-                    if (plain <= 0) {
+                    } catch (Throwable failure) {
                         target.delete();
-                        setMediaStatus(context, rowId, MEDIA_UNAVAILABLE, "", found.kind, 0);
-                        return;
+                        lastFailure = failure;
+                        if (isStorageFull(failure)) break;
                     }
-                    // The entry may have been wiped (Clear Vault) or purged while this fetch was in
-                    // flight; a sealed file for a gone entry would outlive the wipe as an orphan, so
-                    // drop it instead of reporting it stored.
-                    synchronized (LOCK) {
-                        if (!entryExistsLocked(db(context), rowId)) { target.delete(); return; }
-                    }
-                    setMediaStatus(context, rowId, MEDIA_STORED, name, found.kind, target.length());
-                } catch (Throwable failure) {
-                    target.delete();
-                    setMediaStatus(context, rowId, isStorageFull(failure) ? MEDIA_STORAGE_FULL : MEDIA_FAILED,
+                }
+                if (lastFailure != null) {
+                    setMediaStatus(context, rowId, isStorageFull(lastFailure) ? MEDIA_STORAGE_FULL : MEDIA_FAILED,
                         "", found.kind, 0);
-                    Settings.hookFailedPrivately(KEY, "Can't keep a message's media in the vault", failure);
+                    Settings.hookFailedPrivately(KEY, "Can't keep a message's media in the vault", lastFailure);
+                } else {
+                    setMediaStatus(context, rowId, MEDIA_UNAVAILABLE, "", found.kind, 0);
                 }
             });
         } catch (RuntimeException rejected) {

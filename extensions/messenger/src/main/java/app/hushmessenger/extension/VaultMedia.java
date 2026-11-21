@@ -26,13 +26,33 @@ final class VaultMedia {
      */
     static String pick(MessageLogAttachment.Found found) {
         for (String address : found.addresses) {
-            if (address.startsWith("file:") || address.startsWith("content://")) return address;
+            if (isLocal(address)) return address;
         }
         return MessageLogAttachment.pick(found);
     }
 
+    /**
+     * [found]'s addresses in the order the vault tries them: addresses on the phone first (already fetched
+     * and decrypted, and they cannot expire), then the rest in the order the reader ranked them. The fetch
+     * walks this list until one address yields the whole file, so one dead address never decides an entry.
+     */
+    static java.util.List<String> ordered(MessageLogAttachment.Found found) {
+        java.util.List<String> local = new java.util.ArrayList<>();
+        java.util.List<String> remote = new java.util.ArrayList<>();
+        for (String address : found.addresses) {
+            (isLocal(address) ? local : remote).add(address);
+        }
+        local.addAll(remote);
+        return local;
+    }
+
+    /** Whether an address names a file on the phone rather than a web address. */
+    static boolean isLocal(String address) {
+        return address.startsWith("file:") || address.startsWith("content://") || address.startsWith("/");
+    }
+
     static InputStream open(String address) {
-        if (address.startsWith("file:") || address.startsWith("content://")) return openLocal(address);
+        if (isLocal(address)) return openLocal(address);
         return opener.apply(address);
     }
 
@@ -44,8 +64,17 @@ final class VaultMedia {
                 if (context == null) return null;
                 return context.getContentResolver().openInputStream(android.net.Uri.parse(address));
             }
-            java.io.File file = new java.io.File(new java.net.URI(address));
-            return new java.io.FileInputStream(file);
+            if (address.startsWith("/")) {
+                return new java.io.FileInputStream(new java.io.File(address));
+            }
+            try {
+                return new java.io.FileInputStream(new java.io.File(new java.net.URI(address)));
+            } catch (Exception notAUri) {
+                String path = address.substring("file:".length());
+                while (path.startsWith("//")) path = path.substring(1);
+                if (!path.startsWith("/")) path = "/" + path;
+                return new java.io.FileInputStream(new java.io.File(path));
+            }
         } catch (Exception unreadable) {
             return null;
         }

@@ -293,8 +293,27 @@ final class VaultSheet {
             || Vault72h.KIND_GIF.equals(entry.kind)) {
             WORK.execute(() -> {
                 byte[] bytes = Vault72h.openMedia(page, entry);
+                android.graphics.drawable.Drawable drawable = null;
                 android.graphics.Bitmap picture = null;
-                if (bytes != null) {
+                if (bytes != null && android.os.Build.VERSION.SDK_INT >= 28) {
+                    // ImageDecoder plays animated GIF and WebP files as they were sent, not as a still
+                    // first frame, and decodes still photos the same as the bitmap path did.
+                    try {
+                        drawable = android.graphics.ImageDecoder.decodeDrawable(
+                            android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes)),
+                            (decoder, info, source) -> {
+                                int width = info.getSize().getWidth();
+                                int height = info.getSize().getHeight();
+                                int longest = Math.max(width, height);
+                                if (longest > 2048) {
+                                    decoder.setTargetSize(width * 2048 / longest, height * 2048 / longest);
+                                }
+                            });
+                    } catch (Throwable undecodable) {
+                        drawable = null;
+                    }
+                }
+                if (bytes != null && drawable == null) {
                     BitmapFactory.Options bounds = new BitmapFactory.Options();
                     bounds.inJustDecodeBounds = true;
                     BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
@@ -303,16 +322,24 @@ final class VaultSheet {
                     while (bounds.outWidth / (options.inSampleSize * 2) >= 1024) options.inSampleSize *= 2;
                     picture = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
                 }
+                final android.graphics.drawable.Drawable shownDrawable = drawable;
                 final android.graphics.Bitmap shown = picture;
                 page.runOnUiThread(() -> {
-                    if (shown == null) {
+                    if (shownDrawable == null && shown == null) {
                         page.feedback(page.text.get("vault_media_unavailable"), Toast.LENGTH_LONG);
                         return;
                     }
                     SettingsDialog sheet = new SettingsDialog(page, page.ui, page.text,
                         page.text.get("vault_title"), "");
                     ImageView view = new ImageView(page);
-                    view.setImageBitmap(shown);
+                    if (shownDrawable != null) {
+                        view.setImageDrawable(shownDrawable);
+                        if (shownDrawable instanceof android.graphics.drawable.AnimatedImageDrawable) {
+                            ((android.graphics.drawable.AnimatedImageDrawable) shownDrawable).start();
+                        }
+                    } else {
+                        view.setImageBitmap(shown);
+                    }
                     view.setAdjustViewBounds(true);
                     sheet.body.addView(view);
                     Button close = page.ui.primaryButton(page.text.get("vault_close"));
