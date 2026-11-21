@@ -256,6 +256,8 @@ final class VaultSheet {
     }
 
     private String mediaLabel(String status) {
+        if (Vault72h.MEDIA_NO_ADDRESS.equals(status)) return page.text.get("vault_media_no_address");
+        if (Vault72h.MEDIA_NOT_KEPT.equals(status)) return page.text.get("vault_media_not_kept");
         if (Vault72h.MEDIA_STORED.equals(status)) return page.text.get("vault_media_stored");
         if (Vault72h.MEDIA_UNAVAILABLE.equals(status)) return page.text.get("vault_media_unavailable");
         if (Vault72h.MEDIA_STORAGE_FULL.equals(status)) return page.text.get("vault_media_storage_full");

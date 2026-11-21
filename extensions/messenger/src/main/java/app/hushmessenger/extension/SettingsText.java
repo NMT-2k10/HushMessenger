@@ -695,6 +695,8 @@ final class SettingsText {
         ENGLISH.put("vault_media_failed", "The media download failed");
         ENGLISH.put("vault_media_storage_full", "The phone's storage was full");
         ENGLISH.put("vault_media_pending", "Fetching…");
+        ENGLISH.put("vault_media_no_address", "No downloadable copy came with the message");
+        ENGLISH.put("vault_media_not_kept", "Keeping this kind of media was off");
         ENGLISH.put("vault_open_media", "Open");
         ENGLISH.put("vault_close", "Close");
         ENGLISH.put("vault_stats", "%1$s messages · %2$s recalled · %3$s with media saved · next copy expires %4$s");

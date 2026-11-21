@@ -98,6 +98,10 @@ public final class Vault72h {
 
     // What happened to an entry's media. STORED is only written once the sealed file is complete on disk.
     static final String MEDIA_NONE = "NONE";
+    /** The message was media-shaped but carried no address the vault could fetch: said out loud, never silent. */
+    static final String MEDIA_NO_ADDRESS = "NO_ADDRESS";
+    /** An address arrived but the vault's keep switch for that kind was off, so nothing was fetched. */
+    static final String MEDIA_NOT_KEPT = "NOT_KEPT";
     static final String MEDIA_PENDING = "PENDING";
     static final String MEDIA_STORED = "STORED";
     static final String MEDIA_UNAVAILABLE = "UNAVAILABLE";
@@ -488,17 +492,21 @@ public final class Vault72h {
             synchronized (LOCK) {
                 SQLiteDatabase db = db(context);
                 purgeLocked(context, db, now);
-                long rowId = mergeOrInsertLocked(db, keptId, keptThread, keptSender, keptChat, senderId, kind, words,
-                    sentAt > 0 ? sentAt : now, now, source, found);
+                String dedup = !keptId.isEmpty() ? "m:" + keptId
+                    : "t:" + MessageLog.digest(keptThread + '\u0001' + words + '\u0001'
+                        + ((sentAt > 0 ? sentAt : now) / LOOSE_MERGE_WINDOW_MS));
+                long rowId = mergeOrInsertLocked(db, keptId, dedup, !keptId.isEmpty(), keptThread, keptSender,
+                    keptChat, senderId, kind, words, sentAt > 0 ? sentAt : now, now, source, found, attachment);
                 if (rowId >= 0 && found != null) {
                     String current = mediaStatusLocked(db, rowId);
                     if (!MEDIA_STORED.equals(current)) {
                         if (mediaWanted(found.kind)) {
                             updateMediaStatusLocked(db, rowId, MEDIA_PENDING, "", found.kind, 0);
                             fetchMedia(context, rowId, keptThread, keptId, found);
-                        } else if (MEDIA_PENDING.equals(current)) {
-                            // The vault's keep switch for this kind is off, so nothing will be fetched.
-                            updateMediaStatusLocked(db, rowId, MEDIA_NONE, "", found.kind, 0);
+                        } else {
+                            // The vault's keep switch for this kind is off, so nothing will be fetched;
+                            // the entry says so instead of looking like a message with no media at all.
+                            updateMediaStatusLocked(db, rowId, MEDIA_NOT_KEPT, "", found.kind, 0);
                         }
                     }
                 }
@@ -539,14 +547,16 @@ public final class Vault72h {
                 if (key.isEmpty()) return -1;
                 if (!fresh) {
                     Cursor existing = db.query("entries", new String[] {"row_id"},
-                        "msg_id=? OR dedup=?", new String[] {key, "m:" + key}, null, null, null, "1");
+                        "msg_id=? OR dedup=? OR dedup=?", new String[] {key, "m:" + key, "r:" + key},
+                        null, null, null, "1");
                     try {
                         if (!existing.moveToFirst()) return -1;
                     } finally { existing.close(); }
                 }
-                long rowId = mergeOrInsertLocked(db, keptId.isEmpty() ? keptThreading : keptId, "", "", "",
+                String dedup = !keptId.isEmpty() ? "m:" + keptId : "r:" + keptThreading;
+                long rowId = mergeOrInsertLocked(db, key, dedup, !keptId.isEmpty(), "", "", "",
                     senderId, KIND_TEXT, MessageLog.clip(text, MAX_TEXT_CHARS), sentAt > 0 ? sentAt : now, now,
-                    SOURCE_ROW, null);
+                    SOURCE_ROW, null, false);
                 if (rowId >= 0) Settings.activeAt.put(KEY, now);
                 return rowId;
             }
@@ -587,28 +597,43 @@ public final class Vault72h {
     }
 
     /**
-     * Inserts the capture, or merges it into the entry it belongs to. Matching is by stable message id first,
-     * then, for word captures with no id, by the same thread and words within {@link #LOOSE_MERGE_WINDOW_MS}.
+     * Inserts the capture, or merges it into the entry it belongs to. Matching is by the capture's dedup key
+     * first (the message's own id when a surface hands one over, a row's threading id under its own prefix
+     * when it doesn't, a digest of thread and words when neither surface has an id), then, for word captures,
+     * loosely: the same words in the same chat within {@link #LOOSE_MERGE_WINDOW_MS}, where a surface that
+     * names no chat (a chat row) matches any. The loose match is what lets the vault's two surfaces agree on
+     * one message when only one of them ever saw its id; it never joins two captures that each carry a
+     * different message id of their own, and it merges nothing when more than one entry could be the match.
      * A merge never moves the first capture's times (the 72 hours run from the first capture), never overwrites
-     * a recall, fills only empty fields, and treats different words under one id as an edit.
+     * a recall, fills only empty fields, upgrades a weaker key to the message's own id when a later capture
+     * brings it, and treats different words under one id as an edit.
      */
-    private static long mergeOrInsertLocked(SQLiteDatabase db, String msgId, String thread, String sender,
+    private static long mergeOrInsertLocked(SQLiteDatabase db, String msgId, String dedup, boolean strongId,
+                                            String thread, String sender,
                                             String chat, long senderId, String kind, String words,
                                             long sentAt, long now, String source,
-                                            MessageLogAttachment.Found found) throws Exception {
-        String dedup = !msgId.isEmpty() ? "m:" + msgId : "t:" + MessageLog.digest(thread + '\u0001' + words + '\u0001' + (sentAt / LOOSE_MERGE_WINDOW_MS));
+                                            MessageLogAttachment.Found found, boolean attachment) throws Exception {
         long existing = -1;
         Cursor byDedup = db.query("entries", new String[] {"row_id"}, "dedup=?", new String[] {dedup}, null, null, null, "1");
         try { if (byDedup.moveToFirst()) existing = byDedup.getLong(0); } finally { byDedup.close(); }
-        if (existing < 0 && msgId.isEmpty() && KIND_TEXT.equals(kind) && !words.isEmpty()) {
-            Cursor loose = db.query("entries", new String[] {"row_id", "body"},
-                "thread=? AND kind=? AND received_at>=? AND expires_at>?",
-                new String[] {thread, KIND_TEXT, String.valueOf(now - LOOSE_MERGE_WINDOW_MS), String.valueOf(now)},
+        if (existing < 0 && KIND_TEXT.equals(kind) && !words.isEmpty()) {
+            Cursor loose = db.query("entries", new String[] {"row_id", "body", "thread", "dedup"},
+                "kind=? AND received_at>=? AND expires_at>?",
+                new String[] {KIND_TEXT, String.valueOf(now - LOOSE_MERGE_WINDOW_MS), String.valueOf(now)},
                 null, null, "received_at DESC");
             try {
+                long match = -1;
                 while (loose.moveToNext()) {
-                    if (words.equals(openText(loose.getBlob(1)))) { existing = loose.getLong(0); break; }
+                    if (!words.equals(openText(loose.getBlob(1)))) continue;
+                    String otherThread = loose.getString(2);
+                    if (otherThread == null) otherThread = "";
+                    if (!thread.isEmpty() && !otherThread.isEmpty() && !thread.equals(otherThread)) continue;
+                    String otherDedup = loose.getString(3);
+                    if (strongId && otherDedup != null && otherDedup.startsWith("m:")) continue;
+                    if (match >= 0) { match = -1; break; }
+                    match = loose.getLong(0);
                 }
+                existing = match;
             } finally { loose.close(); }
         }
         if (existing < 0) {
@@ -626,18 +651,26 @@ public final class Vault72h {
             values.put("expires_at", now + TTL_MS);
             values.put("status", STATUS_ACTIVE);
             values.put("source", source);
-            values.put("media_status", found != null ? MEDIA_PENDING : MEDIA_NONE);
+            values.put("media_status", found != null ? MEDIA_PENDING : attachment ? MEDIA_NO_ADDRESS : MEDIA_NONE);
             return db.insertOrThrow("entries", null, values);
         }
         // Merge into the existing entry.
         Cursor row = db.query("entries",
-            new String[] {"body", "edited_from", "status", "sender", "chat", "thread", "kind", "media_status"},
+            new String[] {"body", "edited_from", "status", "sender", "chat", "thread", "kind", "media_status",
+                "msg_id", "dedup"},
             "row_id=?", new String[] {String.valueOf(existing)}, null, null, null, "1");
         try {
             if (!row.moveToFirst()) return existing;
             String oldWords = openText(row.getBlob(0));
             String status = row.getString(2);
             ContentValues values = new ContentValues();
+            if (strongId && !msgId.isEmpty() && !dedup.equals(row.getString(9))) {
+                // A later capture brought the message's own id to an entry a weaker key started: the entry
+                // takes the id, so a recall naming it finds this entry. No other entry can hold that key —
+                // the dedup lookup above would have matched it instead.
+                values.put("msg_id", msgId);
+                values.put("dedup", dedup);
+            }
             if (!words.isEmpty() && !oldWords.isEmpty() && !words.equals(oldWords) && !STATUS_RECALLED.equals(status)) {
                 values.put("edited_from", sealText(oldWords));
                 values.put("body", sealText(words));
