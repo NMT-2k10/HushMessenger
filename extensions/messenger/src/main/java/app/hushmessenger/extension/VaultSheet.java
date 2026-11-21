@@ -238,10 +238,28 @@ final class VaultSheet {
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
                 params.setMarginStart(page.ui.dp(8));
                 media.addView(open, params);
+                if (Vault72h.KIND_PHOTO.equals(entry.kind) || Vault72h.KIND_VIDEO.equals(entry.kind)) {
+                    Button save = page.ui.button(page.text.get("vault_save_gallery"));
+                    save.setTag("vault_save_gallery");
+                    save.setOnClickListener(clicked -> saveToGallery(entry));
+                    LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(-2, -2);
+                    saveParams.setMarginStart(page.ui.dp(8));
+                    media.addView(save, saveParams);
+                }
             }
             page.ui.add(card, media, 6);
         }
+        if (!entry.diag.isEmpty() && !entry.hasMedia()) {
+            page.ui.add(card, page.ui.text(entry.diag, 11, page.ui.muted, false), 2);
+        }
         return card;
+    }
+
+    /** Copies a kept photo or video into the phone's gallery; the copy there outlives the vault's 72 hours. */
+    private void saveToGallery(Vault72h.Entry entry) {
+        Vault72h.exportToGallery(page, entry, saved -> page.runOnUiThread(() ->
+            page.feedback(page.text.get(saved ? "vault_saved_gallery" : "vault_save_gallery_failed"),
+                Toast.LENGTH_LONG)));
     }
 
     private String kindLabel(String kind) {

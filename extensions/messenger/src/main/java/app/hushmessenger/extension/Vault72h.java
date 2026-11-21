@@ -139,10 +139,17 @@ public final class Vault72h {
         public final String mediaKind;
         public final String mediaStatus;
         public final long mediaBytes;
+        /**
+         * A structural fingerprint of what the message object carried when it was scanned — counts, media
+         * type names and address schemes only, never an address or a value. Shown on the entry while its
+         * media is missing, so the reason is visible instead of guessed.
+         */
+        public final String diag;
 
         Entry(long rowId, String msgId, String thread, String sender, String chat, long senderId, String kind,
               String text, String editedFrom, long sentAt, long receivedAt, long expiresAt, String status,
-              String source, String mediaName, String mediaKind, String mediaStatus, long mediaBytes) {
+              String source, String mediaName, String mediaKind, String mediaStatus, long mediaBytes,
+              String diag) {
             this.rowId = rowId;
             this.msgId = msgId;
             this.thread = thread;
@@ -161,6 +168,7 @@ public final class Vault72h {
             this.mediaKind = mediaKind;
             this.mediaStatus = mediaStatus;
             this.mediaBytes = mediaBytes;
+            this.diag = diag == null ? "" : diag;
         }
 
         public boolean recalled() { return STATUS_RECALLED.equals(status); }
@@ -342,6 +350,72 @@ public final class Vault72h {
         }
     }
 
+    /** Told how a gallery export ended: the copy is in the phone's gallery, or it couldn't be put there. */
+    interface GalleryResult { void done(boolean saved); }
+
+    /**
+     * Copies [entry]'s kept photo or video into the phone's gallery through MediaStore, on the media thread.
+     * The gallery copy is the user's own from then on: the vault's 72 hours and Clear Vault never touch it.
+     * Only a stored photo or video can be exported; anything else reports failure without touching the store.
+     */
+    static void exportToGallery(Context context, Entry entry, GalleryResult result) {
+        if (context == null || entry == null || !entry.hasMedia()
+            || !(KIND_PHOTO.equals(entry.kind) || KIND_VIDEO.equals(entry.kind))) {
+            if (result != null) result.done(false);
+            return;
+        }
+        try {
+            MEDIA.execute(() -> result.done(saveToGallery(context, entry)));
+        } catch (RuntimeException rejected) {
+            result.done(false);
+        }
+    }
+
+    /** The export itself, on the calling thread. True only when the gallery holds the whole copy. */
+    static boolean saveToGallery(Context context, Entry entry) {
+        boolean video = KIND_VIDEO.equals(entry.kind);
+        android.content.ContentValues values = new android.content.ContentValues();
+        values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+            "hush_vault_" + entry.mediaName.substring(0, Math.min(12, entry.mediaName.length()))
+                + (video ? ".mp4" : ".jpg"));
+        values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, video ? "video/mp4" : "image/jpeg");
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            values.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                video ? "Movies/HushVault" : "Pictures/HushVault");
+            values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+        }
+        android.content.ContentResolver resolver = context.getContentResolver();
+        android.net.Uri collection = video
+            ? android.provider.MediaStore.Video.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            : android.provider.MediaStore.Images.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        android.net.Uri item = null;
+        try (InputStream in = openStream(mediaFile(context, entry.mediaName))) {
+            if (in == null) return false;
+            item = resolver.insert(collection, values);
+            if (item == null) return false;
+            try (java.io.OutputStream out = resolver.openOutputStream(item)) {
+                if (out == null) throw new java.io.IOException("no gallery stream");
+                byte[] buffer = new byte[16 * 1024];
+                int read;
+                long total = 0;
+                while ((read = in.read(buffer)) != -1) { out.write(buffer, 0, read); total += read; }
+                if (total <= 0) throw new java.io.IOException("empty media");
+            }
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                android.content.ContentValues done = new android.content.ContentValues();
+                done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                resolver.update(item, done, null, null);
+            }
+            return true;
+        } catch (Throwable failure) {
+            if (item != null) {
+                try { resolver.delete(item, null, null); } catch (Throwable ignored) {}
+            }
+            Settings.hookFailedPrivately(KEY, "Can't save a vault media file to the gallery", failure);
+            return false;
+        }
+    }
+
     static File mediaFile(Context context, String name) {
         if (context == null || name == null || !name.matches("[0-9a-f]{64}")) return null;
         return new File(new File(context.getFilesDir(), MEDIA_DIR), name);
@@ -353,7 +427,7 @@ public final class Vault72h {
     private static Helper helper;
 
     private static final class Helper extends SQLiteOpenHelper {
-        Helper(Context context) { super(context.getApplicationContext(), DB_NAME, null, 1); }
+        Helper(Context context) { super(context.getApplicationContext(), DB_NAME, null, 2); }
 
         @Override public void onCreate(SQLiteDatabase db) {
             db.execSQL("CREATE TABLE entries ("
@@ -367,13 +441,15 @@ public final class Vault72h {
                 + "sent_at INTEGER NOT NULL, received_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,"
                 + "status TEXT NOT NULL DEFAULT 'ACTIVE', source TEXT NOT NULL DEFAULT '',"
                 + "media_name TEXT NOT NULL DEFAULT '', media_kind TEXT NOT NULL DEFAULT '',"
-                + "media_status TEXT NOT NULL DEFAULT 'NONE', media_bytes INTEGER NOT NULL DEFAULT 0)");
+                + "media_status TEXT NOT NULL DEFAULT 'NONE', media_bytes INTEGER NOT NULL DEFAULT 0,"
+                + "diag TEXT NOT NULL DEFAULT '')");
             db.execSQL("CREATE INDEX idx_vault_expires ON entries(expires_at)");
             db.execSQL("CREATE INDEX idx_vault_msg ON entries(msg_id)");
         }
 
         @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-            // Version 1 is the first; a future version migrates here rather than dropping the archive.
+            // Version 2 adds the per-entry media fingerprint. The archive itself is never dropped.
+            if (oldVersion < 2) db.execSQL("ALTER TABLE entries ADD COLUMN diag TEXT NOT NULL DEFAULT ''");
         }
     }
 
@@ -411,13 +487,25 @@ public final class Vault72h {
      * on the vault's own threads, never on Messenger's message path.
      */
     static void record(String text, String thread, String id, String source, MessageLogAttachment.Found found) {
+        record(text, thread, id, source, found, null, "");
+    }
+
+    /**
+     * A capture whose scan also learned the media's kind and a fingerprint of what the message carried, for
+     * the many messages whose media has no usable address at notification time: the entry is still filed
+     * under its kind, with the reason on it, instead of looking like a plain text message.
+     */
+    static void record(String text, String thread, String id, String source, MessageLogAttachment.Found found,
+                       String shapeKind, String diag) {
         final String keptText = text, keptThread = thread, keptId = id, keptSource = source;
         final MessageLogAttachment.Found keptFound = found;
+        final String keptShape = shapeKind, keptDiag = diag == null ? "" : diag;
         try {
             // The write waits a moment, as the message log's does, so the notification the sender's name is
             // read from has been posted by the time the entry is written.
             WRITER.schedule(() -> recordNow(keptText, keptThread, keptId, keptSource, keptFound,
-                0, 0, "", "", System.currentTimeMillis()), MessageLog.NAME_DELAY_MS, TimeUnit.MILLISECONDS);
+                0, 0, "", "", System.currentTimeMillis(), keptShape, keptDiag),
+                MessageLog.NAME_DELAY_MS, TimeUnit.MILLISECONDS);
         } catch (RuntimeException rejected) {
             Settings.hookFailedPrivately(KEY, "Can't queue a message for the vault", rejected);
         }
@@ -463,6 +551,13 @@ public final class Vault72h {
     static long recordNow(String text, String thread, String id, String source,
                           MessageLogAttachment.Found found, long sentAt, long senderId,
                           String sender, String chat, long now) {
+        return recordNow(text, thread, id, source, found, sentAt, senderId, sender, chat, now, null, "");
+    }
+
+    /** {@link #recordNow} with the scan's kind and fingerprint, for a message whose media carried no address. */
+    static long recordNow(String text, String thread, String id, String source,
+                          MessageLogAttachment.Found found, long sentAt, long senderId,
+                          String sender, String chat, long now, String shapeKind, String diag) {
         Context context = Settings.appContext;
         if (context == null) return -1;
         if (found != null && MessageLogAttachment.EPHEMERAL.equals(found.kind)) return -1;
@@ -471,6 +566,8 @@ public final class Vault72h {
         String keptThread = MessageLog.clip(thread == null ? "" : thread, MAX_THREAD_CHARS);
         String keptId = MessageLog.clip(id == null ? "" : id, MAX_ID_CHARS);
         String kind = kindOf(words, found, attachment);
+        String shaped = kindForShape(shapeKind);
+        if (shaped != null && (KIND_TEXT.equals(kind) || KIND_ATTACHMENT.equals(kind))) kind = shaped;
         // The notification hook hands over no names; the message log reads them off the notification that
         // showed the message, and so does the vault, the same way, without touching the log's own copies.
         String keptSender = sender == null ? "" : sender;
@@ -496,7 +593,8 @@ public final class Vault72h {
                     : "t:" + MessageLog.digest(keptThread + '\u0001' + words + '\u0001'
                         + ((sentAt > 0 ? sentAt : now) / LOOSE_MERGE_WINDOW_MS));
                 long rowId = mergeOrInsertLocked(db, keptId, dedup, !keptId.isEmpty(), keptThread, keptSender,
-                    keptChat, senderId, kind, words, sentAt > 0 ? sentAt : now, now, source, found, attachment);
+                    keptChat, senderId, kind, words, sentAt > 0 ? sentAt : now, now, source, found, attachment,
+                    diag == null ? "" : diag, shaped != null);
                 if (rowId >= 0 && found != null) {
                     String current = mediaStatusLocked(db, rowId);
                     if (!MEDIA_STORED.equals(current)) {
@@ -556,7 +654,7 @@ public final class Vault72h {
                 String dedup = !keptId.isEmpty() ? "m:" + keptId : "r:" + keptThreading;
                 long rowId = mergeOrInsertLocked(db, key, dedup, !keptId.isEmpty(), "", "", "",
                     senderId, KIND_TEXT, MessageLog.clip(text, MAX_TEXT_CHARS), sentAt > 0 ? sentAt : now, now,
-                    SOURCE_ROW, null, false);
+                    SOURCE_ROW, null, false, "", false);
                 if (rowId >= 0) Settings.activeAt.put(KEY, now);
                 return rowId;
             }
@@ -587,6 +685,84 @@ public final class Vault72h {
         return KIND_ATTACHMENT;
     }
 
+    /** The vault kind a scan's shape names, or null when it names none the vault files media under. */
+    static String kindForShape(String shapeKind) {
+        if (shapeKind == null) return null;
+        if (MessageLogAttachment.AUDIO.equals(shapeKind)) return KIND_AUDIO;
+        if (MessageLogAttachment.VIDEO.equals(shapeKind)) return KIND_VIDEO;
+        if (MessageLogAttachment.PHOTO.equals(shapeKind)) return KIND_PHOTO;
+        return null;
+    }
+
+    /**
+     * Media for a message the vault already archived, resolved later — Messenger's thread view resolving the
+     * message's media for display is the moment its addresses exist, above all in encrypted chats, whose
+     * notification-time message carries none. Queued like a capture; the fetch itself runs on the media thread.
+     * A null [found] still records [diag], so the entry can show what the thread-side message carried.
+     */
+    static void attachFound(String id, MessageLogAttachment.Found found, String diag) {
+        if (id == null || id.isEmpty()) return;
+        final String keptId = MessageLog.clip(id, MAX_ID_CHARS);
+        final MessageLogAttachment.Found keptFound = found;
+        final String keptDiag = diag == null ? "" : diag;
+        try {
+            WRITER.execute(() -> attachFoundNow(keptId, keptFound, keptDiag, System.currentTimeMillis()));
+        } catch (RuntimeException rejected) {
+            Settings.hookFailedPrivately(KEY, "Can't queue resolved media for the vault", rejected);
+        }
+    }
+
+    /**
+     * Attaches [found] to the entry for [id] on the calling thread and starts its fetch. Returns false when no
+     * live entry carries that id — resolution only enriches what a capture already archived — or when the
+     * media is view-once, which the vault never takes on any surface.
+     */
+    static boolean attachFoundNow(String id, MessageLogAttachment.Found found, String diag, long now) {
+        Context context = Settings.appContext;
+        if (context == null || id == null || id.isEmpty()) return false;
+        if (found != null && MessageLogAttachment.EPHEMERAL.equals(found.kind)) return false;
+        try {
+            synchronized (LOCK) {
+                SQLiteDatabase db = db(context);
+                purgeLocked(context, db, now);
+                Cursor row = db.query("entries", new String[] {"row_id", "thread", "kind", "media_status", "diag"},
+                    "msg_id=? AND expires_at>?", new String[] {id, String.valueOf(now)}, null, null, null, "1");
+                long rowId;
+                String thread, kind, status, oldDiag;
+                try {
+                    if (!row.moveToFirst()) return false;
+                    rowId = row.getLong(0);
+                    thread = row.getString(1);
+                    kind = row.getString(2);
+                    status = row.getString(3);
+                    oldDiag = row.getString(4);
+                } finally { row.close(); }
+                if (diag != null && !diag.isEmpty() && (oldDiag == null || oldDiag.isEmpty())) {
+                    ContentValues values = new ContentValues();
+                    values.put("diag", diag);
+                    db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
+                }
+                if (found == null || MEDIA_STORED.equals(status)) return true;
+                String shaped = kindForShape(found.kind);
+                if (shaped != null && (KIND_TEXT.equals(kind) || KIND_ATTACHMENT.equals(kind))) {
+                    ContentValues values = new ContentValues();
+                    values.put("kind", shaped);
+                    db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
+                }
+                if (mediaWanted(found.kind)) {
+                    updateMediaStatusLocked(db, rowId, MEDIA_PENDING, "", found.kind, 0);
+                    fetchMedia(context, rowId, thread == null ? "" : thread, id, found);
+                } else {
+                    updateMediaStatusLocked(db, rowId, MEDIA_NOT_KEPT, "", found.kind, 0);
+                }
+                return true;
+            }
+        } catch (Throwable failure) {
+            Settings.hookFailedPrivately(KEY, "Can't attach resolved media in the vault", failure);
+            return false;
+        }
+    }
+
     /** Whether the vault's own keep switch for this media kind is on. The message log's switches don't decide. */
     static boolean mediaWanted(String foundKind) {
         android.content.SharedPreferences prefs = Settings.preferences;
@@ -612,7 +788,8 @@ public final class Vault72h {
                                             String thread, String sender,
                                             String chat, long senderId, String kind, String words,
                                             long sentAt, long now, String source,
-                                            MessageLogAttachment.Found found, boolean attachment) throws Exception {
+                                            MessageLogAttachment.Found found, boolean attachment,
+                                            String diag, boolean mediaShaped) throws Exception {
         long existing = -1;
         Cursor byDedup = db.query("entries", new String[] {"row_id"}, "dedup=?", new String[] {dedup}, null, null, null, "1");
         try { if (byDedup.moveToFirst()) existing = byDedup.getLong(0); } finally { byDedup.close(); }
@@ -651,13 +828,15 @@ public final class Vault72h {
             values.put("expires_at", now + TTL_MS);
             values.put("status", STATUS_ACTIVE);
             values.put("source", source);
-            values.put("media_status", found != null ? MEDIA_PENDING : attachment ? MEDIA_NO_ADDRESS : MEDIA_NONE);
+            values.put("media_status", found != null ? MEDIA_PENDING
+                : attachment || mediaShaped ? MEDIA_NO_ADDRESS : MEDIA_NONE);
+            values.put("diag", diag);
             return db.insertOrThrow("entries", null, values);
         }
         // Merge into the existing entry.
         Cursor row = db.query("entries",
             new String[] {"body", "edited_from", "status", "sender", "chat", "thread", "kind", "media_status",
-                "msg_id", "dedup"},
+                "msg_id", "dedup", "diag"},
             "row_id=?", new String[] {String.valueOf(existing)}, null, null, null, "1");
         try {
             if (!row.moveToFirst()) return existing;
@@ -681,7 +860,17 @@ public final class Vault72h {
             if (row.getBlob(3) == null && sender != null && !sender.isEmpty()) values.put("sender", sealText(sender));
             if (row.getBlob(4) == null && chat != null && !chat.isEmpty()) values.put("chat", sealText(chat));
             if ((row.getString(5) == null || row.getString(5).isEmpty()) && !thread.isEmpty()) values.put("thread", thread);
-            if (KIND_TEXT.equals(row.getString(6)) && !KIND_TEXT.equals(kind)) values.put("kind", kind);
+            String oldKind = row.getString(6);
+            if ((KIND_TEXT.equals(oldKind) || KIND_ATTACHMENT.equals(oldKind))
+                && (KIND_PHOTO.equals(kind) || KIND_VIDEO.equals(kind) || KIND_AUDIO.equals(kind))) {
+                values.put("kind", kind);
+            } else if (KIND_TEXT.equals(oldKind) && !KIND_TEXT.equals(kind)) {
+                values.put("kind", kind);
+            }
+            String oldDiag = row.getString(10);
+            if ((oldDiag == null || oldDiag.isEmpty()) && diag != null && !diag.isEmpty()) {
+                values.put("diag", diag);
+            }
             if (values.size() > 0) db.update("entries", values, "row_id=?", new String[] {String.valueOf(existing)});
             return existing;
         } finally { row.close(); }
@@ -824,14 +1013,14 @@ public final class Vault72h {
 
     private static final String[] COLUMNS = {"row_id", "msg_id", "thread", "sender", "chat", "sender_id", "kind",
         "body", "edited_from", "sent_at", "received_at", "expires_at", "status", "source", "media_name",
-        "media_kind", "media_status", "media_bytes"};
+        "media_kind", "media_status", "media_bytes", "diag"};
 
     private static Entry readEntry(Cursor row) {
         return new Entry(row.getLong(0), row.getString(1), row.getString(2) == null ? "" : row.getString(2),
             openText(row.getBlob(3)), openText(row.getBlob(4)), row.getLong(5), row.getString(6),
             openText(row.getBlob(7)), openText(row.getBlob(8)), row.getLong(9), row.getLong(10), row.getLong(11),
             row.getString(12), row.getString(13), row.getString(14), row.getString(15), row.getString(16),
-            row.getLong(17));
+            row.getLong(17), row.getString(18));
     }
 
     /**

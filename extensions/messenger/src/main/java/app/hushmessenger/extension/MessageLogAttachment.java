@@ -39,6 +39,7 @@ final class MessageLogAttachment {
     private static final String IMAGE_URL = "com.facebook.messaging.model.attachment.ImageUrl";
     private static final String VIDEO_DATA = "com.facebook.messaging.model.attachment.VideoData";
     private static final String EPHEMERAL_DATA = "com.facebook.messaging.model.attachment.EphemeralMediaData";
+    private static final String MEDIA_RESOURCE = "com.facebook.ui.media.attachments.model.MediaResource";
     private static final String URI = "android.net.Uri";
 
     /** The kind {@link #foundForVault} reports for a message whose media is view-once (ephemeral). */
@@ -163,6 +164,193 @@ final class MessageLogAttachment {
             Settings.hookFailedPrivately(Vault72h.KEY, "Can't read a message's media address for the vault", unreadable);
         }
         return ephemeralOnly ? new Found(new String[0], EPHEMERAL) : null;
+    }
+
+    /**
+     * Everything the vault's scan of one message found: the media worth fetching, the kind of media the message
+     * carries even when nothing on it could be fetched, whether the message is view-once, and a structural
+     * fingerprint of what the message object held. The fingerprint counts fields and names media types and
+     * address schemes only — never an address, a key or any other value the message carried.
+     */
+    static final class VaultRead {
+        final Found found;
+        final String shapeKind;
+        final boolean ephemeral;
+        final String diag;
+
+        VaultRead(Found found, String shapeKind, boolean ephemeral, String diag) {
+            this.found = found;
+            this.shapeKind = shapeKind;
+            this.ephemeral = ephemeral;
+            this.diag = diag;
+        }
+    }
+
+    /**
+     * The vault's full scan of [message]. Where {@link #foundForVault} stops at an attachment's own typed data,
+     * this also reads the message's media resources — the handles Messenger's thread view itself resolves a
+     * photo, video or voice clip from, encrypted chats included — and the attachment's extra string map, and it
+     * reports the media's kind and a fingerprint even when no usable address was on the message, so a capture
+     * can be filed under the right kind with the reason showing. A message carrying view-once data is reported
+     * ephemeral and its media resources are never read: view-once media is not the vault's, on any surface.
+     */
+    static VaultRead inspectForVault(Object message) {
+        if (message == null) return new VaultRead(null, null, false, "");
+        StringBuilder diag = new StringBuilder();
+        try {
+            boolean ephemeralSeen = false;
+            String shape = null;
+            Found found = null;
+            int attachments = 0;
+            for (Field field : fields(message.getClass())) {
+                Object held = field.get(message);
+                if (!(held instanceof List)) continue;
+                for (Object item : (List<?>) held) {
+                    if (item == null || !ATTACHMENT.equals(item.getClass().getName())) continue;
+                    attachments++;
+                    if (only(item, EPHEMERAL_DATA) != null) {
+                        ephemeralSeen = true;
+                        continue;
+                    }
+                    Object audio = only(item, AUDIO_DATA);
+                    Object video = only(item, VIDEO_DATA);
+                    Object image = only(item, IMAGE_DATA);
+                    if (shape == null) {
+                        if (audio != null) shape = AUDIO;
+                        else if (video != null) shape = VIDEO;
+                        else if (image != null) shape = PHOTO;
+                    }
+                    if (attachments == 1) {
+                        diag.append("att=1");
+                        if (image != null) diag.append(" img=1 maps=").append(mapSizes(image));
+                        if (video != null) diag.append(" vid=1");
+                        if (audio != null) diag.append(" aud=1");
+                    }
+                    if (found == null) {
+                        String audioAddress = audio == null ? null : signed(only(audio, URI));
+                        if (audioAddress != null) found = new Found(audioAddress, AUDIO);
+                        else {
+                            String[] videoAddresses = video == null ? null : addressesOn(video);
+                            if (videoAddresses != null) found = new Found(videoAddresses, VIDEO);
+                            else {
+                                String imageAddress = image == null ? null : largest(image);
+                                if (imageAddress != null) found = new Found(imageAddress, PHOTO);
+                                else {
+                                    String mapped = mappedAddress(item, shape);
+                                    if (mapped != null && shape != null) found = new Found(mapped, shape);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (ephemeralSeen && found == null) {
+                return new VaultRead(null, null, true, diag.toString());
+            }
+            if (!ephemeralSeen) {
+                Found resource = resourceMedia(message, diag);
+                if (resource != null) {
+                    if (shape == null) shape = resource.kind;
+                    if (found == null) found = resource;
+                }
+            }
+            return new VaultRead(found, shape, false, diag.toString());
+        } catch (Throwable unreadable) {
+            Settings.hookFailedPrivately(Vault72h.KEY, "Can't scan a message's media for the vault", unreadable);
+            return new VaultRead(null, null, false, diag.toString());
+        }
+    }
+
+    /** The entry counts of an image's size maps, as "a,b" — how much of the photo the message itself carried. */
+    private static String mapSizes(Object image) throws Exception {
+        StringBuilder sizes = new StringBuilder();
+        for (Field field : image.getClass().getDeclaredFields()) {
+            if (!IMAGE_MAP.equals(field.getType().getName())) continue;
+            field.setAccessible(true);
+            Object map = field.get(image);
+            Object held = map == null ? null : only(map, Map.class);
+            if (sizes.length() > 0) sizes.append(',');
+            sizes.append(held instanceof Map ? ((Map<?, ?>) held).size() : -1);
+        }
+        return sizes.length() == 0 ? "-" : sizes.toString();
+    }
+
+    /** An https address among an attachment's extra string map values, or null when it holds none. */
+    private static String mappedAddress(Object attachment, String shape) throws Exception {
+        if (shape == null) return null;
+        for (Field field : attachment.getClass().getDeclaredFields()) {
+            if (!Map.class.isAssignableFrom(field.getType())) continue;
+            field.setAccessible(true);
+            Object held = field.get(attachment);
+            if (!(held instanceof Map)) continue;
+            for (Object value : ((Map<?, ?>) held).values()) {
+                String address = signed(value);
+                if (address != null) return address;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The media on the message's own media resources, the handles the thread view resolves media from. A
+     * resource names its kind in its type enum (the encrypted kinds included), and carries its addresses as
+     * Uris of any scheme — a web address to fetch, or a file or content address on the phone that Messenger
+     * has already fetched and decrypted, which the vault may copy like any file of its own app. Only counts,
+     * the kind's name and the schemes go to [diag]; no address ever does.
+     */
+    private static Found resourceMedia(Object message, StringBuilder diag) throws Exception {
+        Found best = null;
+        int resources = 0;
+        for (Field field : fields(message.getClass())) {
+            Object held = field.get(message);
+            if (!(held instanceof List)) continue;
+            for (Object item : (List<?>) held) {
+                if (item == null || !MEDIA_RESOURCE.equals(item.getClass().getName())) continue;
+                resources++;
+                String kind = null;
+                boolean waveform = false;
+                List<String> addresses = new ArrayList<>();
+                StringBuilder schemes = new StringBuilder();
+                for (Field part : item.getClass().getDeclaredFields()) {
+                    part.setAccessible(true);
+                    Object value = part.get(item);
+                    if (value == null) continue;
+                    if (part.getType().isEnum()) {
+                        String name = ((Enum<?>) value).name();
+                        if (name.contains("VIDEO")) kind = VIDEO;
+                        else if (name.contains("AUDIO")) kind = AUDIO;
+                        else if (name.contains("PHOTO")) kind = PHOTO;
+                        if (resources == 1) diag.append(" mrk=").append(name);
+                    } else if (part.getType().getName().endsWith("WaveformData")) {
+                        waveform = true;
+                    } else if (URI.equals(part.getType().getName())) {
+                        String address = value.toString();
+                        String scheme = schemeOf(address);
+                        if (scheme == null) continue;
+                        if (!addresses.contains(address)) addresses.add(address);
+                        if (schemes.indexOf(scheme) < 0) {
+                            if (schemes.length() > 0) schemes.append('+');
+                            schemes.append(scheme);
+                        }
+                    }
+                }
+                if (kind == null && waveform) kind = AUDIO;
+                if (resources == 1) diag.append(" mr=1 uris=").append(schemes.length() == 0 ? "-" : schemes);
+                if (best == null && kind != null && !addresses.isEmpty()) {
+                    best = new Found(addresses.toArray(new String[0]), kind);
+                }
+            }
+        }
+        if (resources > 1) diag.append(" mr=").append(resources);
+        return best;
+    }
+
+    /** The scheme of an address the vault may use — a web address, or a file or content address on the phone. */
+    private static String schemeOf(String address) {
+        if (address.startsWith("https://")) return "https";
+        if (address.startsWith("file://") || address.startsWith("file:")) return "file";
+        if (address.startsWith("content://")) return "content";
+        return null;
     }
 
     /** Whether media of [kind] is being kept: the log itself on and usable, and the switch under it on. */

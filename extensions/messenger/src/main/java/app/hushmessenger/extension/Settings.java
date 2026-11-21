@@ -1359,9 +1359,9 @@ public final class Settings {
             else INCOMING_MEDIA.set(found);
         } else INCOMING_MEDIA.remove();
         if (forVault) {
-            MessageLogAttachment.Found found = MessageLogAttachment.foundForVault(message);
-            if (found == null) INCOMING_VAULT_MEDIA.remove();
-            else INCOMING_VAULT_MEDIA.set(found);
+            MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+            if (read == null) INCOMING_VAULT_MEDIA.remove();
+            else INCOMING_VAULT_MEDIA.set(read);
         } else INCOMING_VAULT_MEDIA.remove();
     }
 
@@ -1371,13 +1371,13 @@ public final class Settings {
         return found;
     }
 
-    /** The same message object, read for the vault: its own keep switches decide, and view-once is never taken. */
-    private static final ThreadLocal<MessageLogAttachment.Found> INCOMING_VAULT_MEDIA = new ThreadLocal<>();
+    /** The same message object, scanned for the vault: its own keep switches decide, and view-once is never taken. */
+    private static final ThreadLocal<MessageLogAttachment.VaultRead> INCOMING_VAULT_MEDIA = new ThreadLocal<>();
 
-    static MessageLogAttachment.Found takeIncomingVaultMedia() {
-        MessageLogAttachment.Found found = INCOMING_VAULT_MEDIA.get();
+    static MessageLogAttachment.VaultRead takeIncomingVaultMedia() {
+        MessageLogAttachment.VaultRead read = INCOMING_VAULT_MEDIA.get();
         INCOMING_VAULT_MEDIA.remove();
-        return found;
+        return read;
     }
 
     /**
@@ -1389,12 +1389,35 @@ public final class Settings {
     public static void recordReceivedMessage(String text, String thread) {
         String id = takeIncomingMessageId();
         MessageLogAttachment.Found media = takeIncomingMessageMedia();
-        MessageLogAttachment.Found vaultMedia = takeIncomingVaultMedia();
+        MessageLogAttachment.VaultRead vaultRead = takeIncomingVaultMedia();
         HiddenWords.received(text, id);
         if (wouldUse(MessageLog.KEY)) MessageLog.record(text, thread, id, media);
-        if (wouldUse(Vault72h.KEY)
-            && !(vaultMedia != null && MessageLogAttachment.EPHEMERAL.equals(vaultMedia.kind))) {
-            Vault72h.record(text, thread, id, Vault72h.SOURCE_NOTIFICATION, vaultMedia);
+        if (wouldUse(Vault72h.KEY) && !(vaultRead != null && vaultRead.ephemeral)) {
+            Vault72h.record(text, thread, id, Vault72h.SOURCE_NOTIFICATION,
+                vaultRead == null ? null : vaultRead.found,
+                vaultRead == null ? null : vaultRead.shapeKind,
+                vaultRead == null ? "" : vaultRead.diag);
+        }
+    }
+
+    /** The media bridge hook's gate: the vault on and usable. Checked before the message is even read. */
+    public static boolean vaultWanted() { return wouldUse(Vault72h.KEY); }
+
+    /**
+     * A message whose media Messenger's thread view is resolving for display, handed over by the media bridge
+     * hook with the message's own id. That resolution is where the media's addresses exist — in encrypted
+     * chats the notification-time message carries none — so the vault scans the message again here and
+     * attaches what it finds to the entry the message's arrival already archived. View-once is refused here
+     * exactly as at arrival. Failures are the vault's own and never reach Messenger's thread.
+     */
+    public static void vaultMediaResolved(String id, Object message) {
+        if (id == null || id.isEmpty() || message == null || !wouldUse(Vault72h.KEY)) return;
+        try {
+            MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+            if (read.ephemeral) return;
+            Vault72h.attachFound(id, read.found, read.diag);
+        } catch (Throwable failure) {
+            hookFailedPrivately(Vault72h.KEY, "Can't take a message's resolved media for the vault", failure);
         }
     }
 

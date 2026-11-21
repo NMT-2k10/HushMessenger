@@ -698,6 +698,9 @@ final class SettingsText {
         ENGLISH.put("vault_media_no_address", "No downloadable copy came with the message");
         ENGLISH.put("vault_media_not_kept", "Keeping this kind of media was off");
         ENGLISH.put("vault_open_media", "Open");
+        ENGLISH.put("vault_save_gallery", "Save to gallery");
+        ENGLISH.put("vault_saved_gallery", "Saved to your gallery");
+        ENGLISH.put("vault_save_gallery_failed", "Couldn't save to your gallery");
         ENGLISH.put("vault_close", "Close");
         ENGLISH.put("vault_stats", "%1$s messages · %2$s recalled · %3$s with media saved · next copy expires %4$s");
         ENGLISH.put("vault_expires", "expires %1$s");
