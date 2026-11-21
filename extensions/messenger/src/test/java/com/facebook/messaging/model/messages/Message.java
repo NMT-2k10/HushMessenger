@@ -20,4 +20,11 @@ public final class Message {
         message.A1D.addAll(Arrays.asList(attachments));
         return message;
     }
+
+    /** A message with one attachment and the media resources its thread view would resolve it from. */
+    public static Message withMedia(Object attachment, Object... resources) {
+        Message message = with(attachment);
+        message.A1L.addAll(Arrays.asList(resources));
+        return message;
+    }
 }
