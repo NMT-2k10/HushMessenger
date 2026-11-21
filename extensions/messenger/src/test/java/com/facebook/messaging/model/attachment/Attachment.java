@@ -7,6 +7,7 @@ package com.facebook.messaging.model.attachment;
 public final class Attachment {
     public int A00;
     public long A01;
+    public AttachmentType A04;
     public AudioData A05;
     public EphemeralMediaData A06;
     public ImageData A07;
@@ -42,6 +43,23 @@ public final class Attachment {
     public static Attachment video(VideoData video) {
         Attachment attachment = new Attachment();
         attachment.A08 = video;
+        return attachment;
+    }
+
+    /** An attachment that declares its type, with a photo's data under it — a sticker's actual shape. */
+    public static Attachment typed(AttachmentType type, ImageData image) {
+        Attachment attachment = new Attachment();
+        attachment.A04 = type;
+        attachment.A07 = image;
+        attachment.A0L = "attachment-id";
+        return attachment;
+    }
+
+    /** An attachment that declares its type and carries no data objects at all — a voice clip's shape in an encrypted chat. */
+    public static Attachment typedOnly(AttachmentType type) {
+        Attachment attachment = new Attachment();
+        attachment.A04 = type;
+        attachment.A0L = "attachment-id";
         return attachment;
     }
 }
