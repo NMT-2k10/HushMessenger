@@ -242,7 +242,6 @@ internal val PROFILE_347415354 = ControlProfile(
         "message_actions" to setOf("LX/5Mx;->AZZ(LX/D4u;Ljava/util/EnumMap;)LX/6BI;"),
         "message_actions_more" to setOf("LX/6PS;->EEY(LX/1Hx;LX/5Bd;LX/Gsk;LX/D4u;)V"),
         "message_log" to setOf("Lcom/facebook/messaging/notify/type/NewMessageNotification;-><init>(Lcom/facebook/messaging/accountswitch/model/MessengerAccountType;Lcom/facebook/messaging/model/messages/Message;Lcom/facebook/messaging/model/threads/ThreadSummary;LX/90I;LX/5ay;Lcom/facebook/messaging/push/flags/ServerMessageAlertFlags;Lcom/facebook/push/constants/PushProperty;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;ZZZZZZZ)V"),
-        "vault_media_bridge" to setOf("LX/4TJ;->A0C(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/facebook/messaging/attachments/VideoAttachmentData;", "LX/4TJ;->A0E(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/google/common/collect/ImmutableList;", "LX/4TJ;->A0A(Lcom/facebook/messaging/model/messages/Message;Ljava/lang/String;)Lcom/facebook/messaging/attachments/AudioAttachmentData;"),
         "message_log_button" to setOf("LX/2Ku;->Cnx()Ljava/util/List;"),
         "message_log_click" to setOf("LX/2Ku;->DtU(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;I)V"),
         "moments" to setOf("LX/cOM;->A05()Z", "LX/f14;->A05()Z"),
@@ -359,6 +358,11 @@ internal val PROFILE_347415354 = ControlProfile(
             "LX/cNC;->CpO(I)Ljava/lang/String;",
         ),
         "unsent_recall" to setOf("LX/9y2;->A00(Lcom/facebook/auth/usersession/FbUserSession;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z"),
+        "vault_media_bridge" to setOf(
+            "LX/4TJ;->A0A(Lcom/facebook/messaging/model/messages/Message;Ljava/lang/String;)Lcom/facebook/messaging/attachments/AudioAttachmentData;",
+            "LX/4TJ;->A0C(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/facebook/messaging/attachments/VideoAttachmentData;",
+            "LX/4TJ;->A0E(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/google/common/collect/ImmutableList;",
+        ),
         "view_once_anywhere" to setOf("LX/5H4;->render(LX/5Re;LX/5q2;Lcom/facebook/xapp/messaging/capability/vector/Capabilities;)V"),
         "wifi_identity" to setOf(
             "LX/1af;->A02()LX/ac3;", "LX/38L;->BD0()Ljava/lang/String;", "LX/38L;->C4Y()J",
@@ -595,7 +599,6 @@ internal val PROFILE_347415280 = ControlProfile(
         "message_actions" to setOf("LX/5MI;->AZb(LX/D4s;Ljava/util/EnumMap;)LX/6BO;"),
         "message_actions_more" to setOf("LX/6QF;->EEf(LX/1Hx;LX/5Ay;LX/Gpl;LX/D4s;)V"),
         "message_log" to setOf("Lcom/facebook/messaging/notify/type/NewMessageNotification;-><init>(Lcom/facebook/messaging/accountswitch/model/MessengerAccountType;Lcom/facebook/messaging/model/messages/Message;Lcom/facebook/messaging/model/threads/ThreadSummary;LX/911;LX/5aJ;Lcom/facebook/messaging/push/flags/ServerMessageAlertFlags;Lcom/facebook/push/constants/PushProperty;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;ZZZZZZZ)V"),
-        "vault_media_bridge" to setOf("LX/4TJ;->A0C(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/facebook/messaging/attachments/VideoAttachmentData;", "LX/4TJ;->A0E(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/google/common/collect/ImmutableList;", "LX/4TJ;->A0A(Lcom/facebook/messaging/model/messages/Message;Ljava/lang/String;)Lcom/facebook/messaging/attachments/AudioAttachmentData;"),
         "message_log_button" to setOf("LX/2Kt;->Co3()Ljava/util/List;"),
         "message_log_click" to setOf("LX/2Kt;->Dtb(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;I)V"),
         "moments" to setOf("LX/HUu;->A05()Z", "LX/JRU;->A05()Z"),
@@ -712,6 +715,11 @@ internal val PROFILE_347415280 = ControlProfile(
             "LX/cQj;->CpT(I)Ljava/lang/String;",
         ),
         "unsent_recall" to setOf("LX/9y7;->A00(Lcom/facebook/auth/usersession/FbUserSession;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z"),
+        "vault_media_bridge" to setOf(
+            "LX/4TJ;->A0A(Lcom/facebook/messaging/model/messages/Message;Ljava/lang/String;)Lcom/facebook/messaging/attachments/AudioAttachmentData;",
+            "LX/4TJ;->A0C(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/facebook/messaging/attachments/VideoAttachmentData;",
+            "LX/4TJ;->A0E(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/google/common/collect/ImmutableList;",
+        ),
         "view_once_anywhere" to setOf("LX/5GP;->render(LX/5Qz;LX/5pN;Lcom/facebook/xapp/messaging/capability/vector/Capabilities;)V"),
         "wifi_identity" to setOf(
             "LX/1af;->A02()LX/auK;", "LX/38P;->BD3()Ljava/lang/String;", "LX/38P;->C4c()J",
@@ -948,7 +956,6 @@ internal val PROFILE_347415302 = ControlProfile(
         "message_actions" to setOf("LX/5Mx;->AZZ(LX/D4u;Ljava/util/EnumMap;)LX/6BI;"),
         "message_actions_more" to setOf("LX/6PS;->EEY(LX/1Hx;LX/5Bd;LX/Gsj;LX/D4u;)V"),
         "message_log" to setOf("Lcom/facebook/messaging/notify/type/NewMessageNotification;-><init>(Lcom/facebook/messaging/accountswitch/model/MessengerAccountType;Lcom/facebook/messaging/model/messages/Message;Lcom/facebook/messaging/model/threads/ThreadSummary;LX/90I;LX/5ay;Lcom/facebook/messaging/push/flags/ServerMessageAlertFlags;Lcom/facebook/push/constants/PushProperty;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;ZZZZZZZ)V"),
-        "vault_media_bridge" to setOf("LX/4TJ;->A0C(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/facebook/messaging/attachments/VideoAttachmentData;", "LX/4TJ;->A0E(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/google/common/collect/ImmutableList;", "LX/4TJ;->A0A(Lcom/facebook/messaging/model/messages/Message;Ljava/lang/String;)Lcom/facebook/messaging/attachments/AudioAttachmentData;"),
         "message_log_button" to setOf("LX/2Ku;->Cnx()Ljava/util/List;"),
         "message_log_click" to setOf("LX/2Ku;->DtU(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;I)V"),
         "moments" to setOf("LX/cOM;->A05()Z", "LX/f14;->A05()Z"),
@@ -1065,6 +1072,11 @@ internal val PROFILE_347415302 = ControlProfile(
             "LX/cNC;->CpO(I)Ljava/lang/String;",
         ),
         "unsent_recall" to setOf("LX/9y2;->A00(Lcom/facebook/auth/usersession/FbUserSession;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z"),
+        "vault_media_bridge" to setOf(
+            "LX/4TJ;->A0A(Lcom/facebook/messaging/model/messages/Message;Ljava/lang/String;)Lcom/facebook/messaging/attachments/AudioAttachmentData;",
+            "LX/4TJ;->A0C(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/facebook/messaging/attachments/VideoAttachmentData;",
+            "LX/4TJ;->A0E(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/google/common/collect/ImmutableList;",
+        ),
         "view_once_anywhere" to setOf("LX/5H4;->render(LX/5Re;LX/5q2;Lcom/facebook/xapp/messaging/capability/vector/Capabilities;)V"),
         "wifi_identity" to setOf(
             "LX/1af;->A02()LX/ac2;", "LX/38L;->BD0()Ljava/lang/String;", "LX/38L;->C4Y()J",
@@ -1301,7 +1313,6 @@ internal val PROFILE_347415262 = ControlProfile(
         "message_actions" to setOf("LX/5NT;->AZd(LX/D7r;Ljava/util/EnumMap;)LX/6C3;"),
         "message_actions_more" to setOf("LX/6Qc;->EEy(LX/1IN;LX/5C9;LX/Guw;LX/D7r;)V"),
         "message_log" to setOf("Lcom/facebook/messaging/notify/type/NewMessageNotification;-><init>(Lcom/facebook/messaging/accountswitch/model/MessengerAccountType;Lcom/facebook/messaging/model/messages/Message;Lcom/facebook/messaging/model/threads/ThreadSummary;LX/91d;LX/5bU;Lcom/facebook/messaging/push/flags/ServerMessageAlertFlags;Lcom/facebook/push/constants/PushProperty;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;ZZZZZZZ)V"),
-        "vault_media_bridge" to setOf("LX/4TJ;->A0C(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/facebook/messaging/attachments/VideoAttachmentData;", "LX/4TJ;->A0E(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/google/common/collect/ImmutableList;", "LX/4TJ;->A0A(Lcom/facebook/messaging/model/messages/Message;Ljava/lang/String;)Lcom/facebook/messaging/attachments/AudioAttachmentData;"),
         "message_log_button" to setOf("LX/2LK;->CoC()Ljava/util/List;"),
         "message_log_click" to setOf("LX/2LK;->Dtu(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;I)V"),
         "moments" to setOf("LX/cag;->A05()Z", "LX/f0u;->A05()Z"),
@@ -1418,6 +1429,11 @@ internal val PROFILE_347415262 = ControlProfile(
             "LX/cZZ;->Cpd(I)Ljava/lang/String;",
         ),
         "unsent_recall" to setOf("LX/A01;->A00(Lcom/facebook/auth/usersession/FbUserSession;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z"),
+        "vault_media_bridge" to setOf(
+            "LX/4TJ;->A0A(Lcom/facebook/messaging/model/messages/Message;Ljava/lang/String;)Lcom/facebook/messaging/attachments/AudioAttachmentData;",
+            "LX/4TJ;->A0C(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/facebook/messaging/attachments/VideoAttachmentData;",
+            "LX/4TJ;->A0E(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/google/common/collect/ImmutableList;",
+        ),
         "view_once_anywhere" to setOf("LX/5Ha;->render(LX/5SA;LX/HU4;Lcom/facebook/xapp/messaging/capability/vector/Capabilities;)V"),
         "wifi_identity" to setOf(
             "LX/1b5;->A02()LX/eWo;", "LX/38m;->BD6()Ljava/lang/String;", "LX/38m;->C4e()J",
