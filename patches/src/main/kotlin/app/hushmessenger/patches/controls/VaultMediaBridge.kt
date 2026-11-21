@@ -6,8 +6,10 @@ import app.morphe.patcher.patch.PatchException
 import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod
 import app.morphe.patcher.util.smali.ExternalLabel
 import com.android.tools.smali.dexlib2.AccessFlags
+import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.ClassDef
 import com.android.tools.smali.dexlib2.iface.Method
+import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 
 /**
  * The Temporary Vault's second set of eyes on a message's media. A message's notification-time object
@@ -25,6 +27,9 @@ private const val AUDIO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/A
 
 private const val VAULT_GATE = "$SETTINGS->vaultWanted()Z"
 private const val VAULT_RESOLVED = "$SETTINGS->vaultMediaResolved(Ljava/lang/String;Ljava/lang/Object;)V"
+private const val VAULT_RESOLVED_PHOTOS = "$SETTINGS->vaultResolvedPhotos(Ljava/lang/String;Ljava/lang/Object;)V"
+private const val VAULT_RESOLVED_VIDEO = "$SETTINGS->vaultResolvedVideo(Ljava/lang/String;Ljava/lang/Object;)V"
+private const val VAULT_RESOLVED_AUDIO = "$SETTINGS->vaultResolvedAudio(Ljava/lang/String;Ljava/lang/Object;)V"
 
 /** The bridge's video resolution: (user session, message) to the message's video data. */
 private fun Method.isBridgeVideo(): Boolean =
@@ -73,6 +78,13 @@ internal fun MutableMethod.validateVaultMediaBridge() {
  * At the resolution's start, behind the vault's own gate, the message's id is read off it the same way the
  * notification hook reads it, and the message goes over with it. The extension does the rest off this
  * thread's way and swallows its own failures, so a resolution is never slowed or broken by the vault.
+ *
+ * Each resolution is also met at its returns: what the resolver produced — the photo list, the video data,
+ * the audio data — goes over with the same id. A message's own objects carry references in forms only
+ * Messenger's parser accepts; the resolver's output is where the plain addresses Messenger itself was
+ * about to load exist, above all in encrypted chats. The hand-off reads one local register the return
+ * doesn't hold its value in, and the extension ignores a null result, so a resolution that produced
+ * nothing hands over nothing.
  */
 internal fun MutableMethod.injectVaultMediaBridge() {
     validateVaultMediaBridge()
@@ -87,4 +99,31 @@ internal fun MutableMethod.injectVaultMediaBridge() {
         iget-object v1, v0, ${contract.messageIdField}
         invoke-static {v1, v0}, $VAULT_RESOLVED
     """.trimIndent(), ExternalLabel("stock_behavior", getInstruction(0)))
+
+    val resolved = when {
+        isBridgeVideo() -> VAULT_RESOLVED_VIDEO
+        isBridgeAudio() -> VAULT_RESOLVED_AUDIO
+        else -> VAULT_RESOLVED_PHOTOS
+    }
+    val registers = implementation!!.registerCount
+    // The message parameter: last for the video and photo resolutions, second-to-last for audio, whose
+    // last parameter is a name. Parameter registers sit at the end of the register range.
+    val messageRegister = registers - if (isBridgeAudio()) 2 else 1
+    val returns = implementation!!.instructions.withIndex()
+        .filter { it.value.opcode == Opcode.RETURN_OBJECT }.map { it.index }
+    // Last return first, so an insertion never shifts the index of a return still to be met. The two
+    // lowest registers are the scratch pair: the result is copied out of harm's way first, then the
+    // message, whose id replaces it in the other. Neither is a parameter register, and nothing after
+    // the insertion reads them but the return itself, which keeps its own register.
+    for (at in returns.asReversed()) {
+        val returned = (getInstruction(at) as OneRegisterInstruction).registerA
+        val label = "vault_resolved_$at"
+        addInstructionsWithLabels(at, """
+            move-object/from16 v1, v$returned
+            move-object/from16 v0, v$messageRegister
+            if-eqz v0, :$label
+            iget-object v0, v0, ${contract.messageIdField}
+            invoke-static {v0, v1}, $resolved
+        """.trimIndent(), ExternalLabel(label, getInstruction(at)))
+    }
 }
