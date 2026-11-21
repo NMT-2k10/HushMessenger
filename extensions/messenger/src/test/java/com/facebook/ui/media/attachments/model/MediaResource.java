@@ -8,7 +8,8 @@ import android.net.Uri;
  * is named the way the extension looks for it.
  */
 public final class MediaResource {
-    public enum Kind { PHOTO, VIDEO, AUDIO, FILE, OTHER, ENCRYPTED_PHOTO, ENCRYPTED_VIDEO, ENCRYPTED_AUDIO }
+    public enum Kind { PHOTO, VIDEO, AUDIO, FILE, OTHER, ENCRYPTED_PHOTO, ENCRYPTED_VIDEO, ENCRYPTED_AUDIO,
+        EPHEMERAL_PHOTO }
 
     public Kind A0R;
     public Uri A0D;
