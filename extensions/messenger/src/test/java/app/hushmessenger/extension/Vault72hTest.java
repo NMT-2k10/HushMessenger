@@ -1,6 +1,9 @@
 package app.hushmessenger.extension;
 
 import android.content.Context;
+import android.view.View;
+import android.widget.Button;
+import android.widget.Switch;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.InputStream;
@@ -295,6 +298,34 @@ public class Vault72hTest {
         assertEquals(0, Vault72h.entries(Vault72h.Filter.ALL, null, "không có", T0).size());
         assertEquals(1, Vault72h.entries(Vault72h.Filter.ALL, "thread-1", null, T0).size());
         assertEquals(0, Vault72h.entries(Vault72h.Filter.ALL, "thread-2", null, T0).size());
+    }
+
+    /**
+     * Regression: the Vault's Open/Clear actions and its three keep switches are added under the Vault's
+     * settings row only when the row gets the sub-row wrapper in buildControls; the wrapper's key list once
+     * omitted the Vault, so on device the switch showed with nothing under it. The built page must contain
+     * both action buttons and all three switches, inside the Vault row's own wrapper.
+     */
+    @Test public void vaultActionsAndKeepSwitchesRenderUnderTheVaultRow() {
+        OpenSections.all();
+        try (var screen = org.robolectric.Robolectric.buildActivity(SettingsActivity.class).setup()) {
+            View root = screen.get().getWindow().getDecorView();
+            Switch vaultSwitch = root.findViewWithTag(Vault72h.KEY);
+            assertNotNull("the Vault's own switch", vaultSwitch);
+            View wrapper = (View) ((View) vaultSwitch.getParent()).getParent();
+            Button view = root.findViewWithTag("vault_view");
+            Button clear = root.findViewWithTag("vault_clear");
+            assertNotNull("the Open Vault action renders", view);
+            assertNotNull("the Clear Vault action renders", clear);
+            assertSame("Open Vault sits in the Vault row's wrapper", view, wrapper.findViewWithTag("vault_view"));
+            assertSame("Clear Vault sits in the Vault row's wrapper", clear, wrapper.findViewWithTag("vault_clear"));
+            for (String keep : new String[] {Vault72h.KEEP_PHOTOS, Vault72h.KEEP_VIDEOS, Vault72h.KEEP_VOICE}) {
+                Switch keepSwitch = root.findViewWithTag(keep);
+                assertNotNull("the keep switch renders: " + keep, keepSwitch);
+                assertSame("the keep switch sits in the Vault row's wrapper: " + keep,
+                    keepSwitch, wrapper.findViewWithTag(keep));
+            }
+        }
     }
 
     /** Waits for the media thread to settle an entry's media status, and returns that entry. */
