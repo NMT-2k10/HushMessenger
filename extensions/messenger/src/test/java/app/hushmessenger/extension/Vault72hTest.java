@@ -466,6 +466,29 @@ public class Vault72hTest {
         assertArrayEquals(picture, Vault72h.openMedia(context, entry));
     }
 
+    /**
+     * A message can carry several addresses for one file and any of them can be dead. The fetch walks them
+     * all: the entry is stored from the address that answers, not given up on at the first failure.
+     */
+    @Test public void aDeadAddressDoesNotDecideTheEntry() throws Exception {
+        Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
+        assertTrue(Vault72h.recordNow("Đã gửi một ảnh cho bạn", "thread-1", "m33",
+            Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0,
+            MessageLogAttachment.PHOTO, "att=1 img=1 maps=n,4 asch=https+path") > 0);
+        byte[] picture = new byte[2048];
+        new SecureRandom().nextBytes(picture);
+        VaultMedia.opener = address -> address.contains("dead")
+            ? null : new ByteArrayInputStream(picture);
+        MessageLogAttachment.Found found = new MessageLogAttachment.Found(new String[] {
+            "https://cdn.example.com/dead.jpg?oe=6A1B2C3D",
+            "https://cdn.example.com/alive.jpg?oe=6A1B2C3D"}, MessageLogAttachment.PHOTO);
+        assertTrue(Vault72h.attachFoundNow("m33", found, "", T0));
+        Vault72h.Entry entry = awaitMedia(T0);
+        assertNotNull(entry);
+        assertEquals(Vault72h.MEDIA_STORED, entry.mediaStatus);
+        assertArrayEquals(picture, Vault72h.openMedia(context, entry));
+    }
+
     /** Resolution for a message the vault never archived creates nothing. */
     @Test public void resolvedMediaForAnUnknownMessageCreatesNothing() {
         MessageLogAttachment.Found found = new MessageLogAttachment.Found(

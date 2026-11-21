@@ -475,6 +475,88 @@ public class MessageLogAttachmentTest {
         assertEquals(BIG, read.found.address());
     }
 
+    /**
+     * The shape the device actually reported (diag "maps=-1,4"): the first size map is absent and the second
+     * holds four entries whose strings are bare paths to files Messenger already fetched and decrypted into
+     * its own cache — the only form an encrypted chat hands over. The vault takes the biggest of them; the
+     * message log, which only ever kept web addresses, still takes none.
+     */
+    @Test public void theVaultTakesAPhotoCarriedAsLocalFilePaths() {
+        String dir = "/data/user/0/com.facebook.orca/cache/media/";
+        Message message = Message.with(Attachment.image(ImageData.of(null,
+            AttachmentImageMap.of(
+                new ImageUrl(240, 180, dir + "photo-s.jpg"),
+                new ImageUrl(480, 640, dir + "photo-m.jpg"),
+                new ImageUrl(720, 960, dir + "photo-l.jpg"),
+                new ImageUrl(1440, 1920, dir + "photo-xl.jpg")))));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertFalse(read.ephemeral);
+        assertNotNull(read.found);
+        assertEquals(MessageLogAttachment.PHOTO, read.found.kind);
+        assertEquals(dir + "photo-xl.jpg", read.found.address());
+        assertEquals(4, read.found.addresses.length);
+        assertTrue(read.diag, read.diag.contains("maps=n,4"));
+        assertTrue(read.diag, read.diag.contains("asch=path"));
+        assertFalse(read.diag, read.diag.contains("photo-xl.jpg"));
+        assertNotNull(MessageLogAttachment.foundForVault(message));
+        assertNull(MessageLogAttachment.found(message));
+    }
+
+    /**
+     * A photo whose biggest entry is a reference only Messenger's secure parser can resolve still gives the
+     * vault its usable copies: local files first, then web addresses, biggest first within each form. The
+     * unusable form is named in the fingerprint, never fetched.
+     */
+    @Test public void theVaultOrdersLocalBeforeWebAndSkipsUnusableForms() {
+        Message message = Message.with(Attachment.image(ImageData.of(
+            AttachmentImageMap.of(new ImageUrl(240, 180, SMALL)),
+            AttachmentImageMap.of(
+                new ImageUrl(1440, 1920, "secureref:9f86d081884c7d659a2feaa0c55ad015"),
+                new ImageUrl(720, 960, BIG),
+                new ImageUrl(480, 640, "/data/user/0/com.facebook.orca/cache/media/photo-m.jpg")))));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertNotNull(read.found);
+        assertEquals(3, read.found.addresses.length);
+        assertEquals("/data/user/0/com.facebook.orca/cache/media/photo-m.jpg", read.found.addresses[0]);
+        assertEquals(BIG, read.found.addresses[1]);
+        assertEquals(SMALL, read.found.addresses[2]);
+        assertTrue(read.diag, read.diag.contains("asch=https+other+path"));
+        assertFalse(read.diag, read.diag.contains("secureref"));
+    }
+
+    /** Entries whose address string never arrived are counted in the fingerprint, and give the vault nothing. */
+    @Test public void theVaultCountsPhotoEntriesWithoutAnAddress() {
+        Message message = Message.with(Attachment.image(ImageData.of(null,
+            AttachmentImageMap.of(new ImageUrl(240, 180, null), new ImageUrl(480, 640, "")))));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertNull(read.found);
+        assertEquals(MessageLogAttachment.PHOTO, read.shapeKind);
+        assertTrue(read.diag, read.diag.contains("maps=n,2"));
+        assertTrue(read.diag, read.diag.contains("anull=2"));
+        assertTrue(read.diag, read.diag.contains("asch=-"));
+    }
+
+    /** A video whose playable address is a file on the phone is the vault's, ahead of its web thumbnail. */
+    @Test public void theVaultTakesAVideoCarriedAsAFileOnThePhone() {
+        Message message = Message.with(Attachment.video(new VideoData(
+            Uri.parse("file:///data/user/0/com.facebook.orca/cache/media/clip.mp4"),
+            Uri.parse(THUMB))));
+        MessageLogAttachment.Found found = MessageLogAttachment.foundForVault(message);
+        assertNotNull(found);
+        assertEquals(MessageLogAttachment.VIDEO, found.kind);
+        assertEquals("file:///data/user/0/com.facebook.orca/cache/media/clip.mp4", found.addresses[0]);
+    }
+
+    /** A voice clip carried as a bare path — the decrypted file in Messenger's cache — is the vault's too. */
+    @Test public void theVaultTakesAVoiceClipCarriedAsABarePath() {
+        Message message = Message.with(Attachment.audio(
+            new AudioData(Uri.parse("/data/user/0/com.facebook.orca/cache/media/voice.mp4"))));
+        MessageLogAttachment.Found found = MessageLogAttachment.foundForVault(message);
+        assertNotNull(found);
+        assertEquals(MessageLogAttachment.AUDIO, found.kind);
+        assertEquals("/data/user/0/com.facebook.orca/cache/media/voice.mp4", found.address());
+    }
+
     /** Clear takes the files with the messages, and Undo puts both back. */
     @Test public void clearAndUndoTakeTheClipAlong() throws Exception {
         MessageLog.storeNow(null, THREAD, ID);

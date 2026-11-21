@@ -60,4 +60,32 @@ public class VaultMediaTest {
             file.delete();
         }
     }
+
+    /** A bare path — the form an encrypted chat's photo arrives in — opens as the file it names. */
+    @Test public void aBarePathOpensAsTheFileItNames() throws Exception {
+        java.io.File file = java.io.File.createTempFile("vault-media", ".jpg");
+        byte[] bytes = "the decrypted photo".getBytes(StandardCharsets.UTF_8);
+        java.nio.file.Files.write(file.toPath(), bytes);
+        try (InputStream in = VaultMedia.open(file.getAbsolutePath())) {
+            assertNotNull(in);
+            assertArrayEquals(bytes, in.readAllBytes());
+        } finally {
+            file.delete();
+        }
+    }
+
+    /** The fetch order: every address on the phone before any web address, each group in the reader's order. */
+    @Test public void theFetchOrderPutsLocalAddressesFirst() {
+        MessageLogAttachment.Found found = new MessageLogAttachment.Found(new String[] {
+            "https://cdn.example.com/photo-l.jpg?oe=6A1B2C3D",
+            "/data/user/0/com.facebook.orca/cache/media/photo-m.jpg",
+            "file:///data/user/0/com.facebook.orca/cache/media/photo-s.jpg",
+            "https://cdn.example.com/photo-s.jpg?oe=6A1B2C3D"},
+            MessageLogAttachment.PHOTO);
+        assertEquals(java.util.List.of(
+            "/data/user/0/com.facebook.orca/cache/media/photo-m.jpg",
+            "file:///data/user/0/com.facebook.orca/cache/media/photo-s.jpg",
+            "https://cdn.example.com/photo-l.jpg?oe=6A1B2C3D",
+            "https://cdn.example.com/photo-s.jpg?oe=6A1B2C3D"), VaultMedia.ordered(found));
+    }
 }
