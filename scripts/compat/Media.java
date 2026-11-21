@@ -1632,6 +1632,65 @@ final class Media {
         return hosts.size() == 1 ? hosts : List.of();
     }
 
+    static final String VIDEO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/VideoAttachmentData;";
+    static final String AUDIO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/AudioAttachmentData;";
+    static final String FB_USER_SESSION = "Lcom/facebook/auth/usersession/FbUserSession;";
+
+    /** A bridge resolution's shape: not static, the return type and the parameter types. */
+    static boolean bridgeShape(Method m, String returned, List<String> params) {
+        if (AccessFlags.STATIC.isSet(m.getAccessFlags()) || !returned.equals(m.getReturnType())) return false;
+        var actual = new ArrayList<String>();
+        for (var p : m.getParameterTypes()) actual.add(p.toString());
+        return actual.equals(params);
+    }
+
+    static boolean isBridgeVideo(Method m) {
+        return bridgeShape(m, VIDEO_ATTACHMENT_DATA, List.of(FB_USER_SESSION, MESSAGE_TYPE));
+    }
+
+    static boolean isBridgePhotos(Method m) {
+        return bridgeShape(m, IMMUTABLE_LIST, List.of(FB_USER_SESSION, MESSAGE_TYPE));
+    }
+
+    static boolean isBridgeAudio(Method m) {
+        return bridgeShape(m, AUDIO_ATTACHMENT_DATA, List.of(MESSAGE_TYPE, "Ljava/lang/String;"));
+    }
+
+    static boolean isBridgeResolution(Method m) {
+        return isBridgeVideo(m) || isBridgePhotos(m) || isBridgeAudio(m);
+    }
+
+    /** The room validateVaultMediaBridge asks for: the parameters' words plus this, and two locals over. */
+    static boolean bridgeRoom(Method m) {
+        int words = 1;
+        for (var p : m.getParameterTypes()) words += ("J".contentEquals(p) || "D".contentEquals(p)) ? 2 : 1;
+        return m.getImplementation() != null && m.getImplementation().getRegisterCount() >= words + 2;
+    }
+
+    /**
+     * vault_media_bridge: the one class that resolves a message's video data, photo list and audio data, and
+     * its three resolutions, each with the room the hook needs. Mirrors findVaultMediaBridge and
+     * validateVaultMediaBridge in VaultMediaBridge.kt; Controls adds them only when the message log's own
+     * contract resolved, as the patch's proof asks for it too.
+     */
+    static List<Method> vaultMediaBridge(List<ClassDef> classes) {
+        for (var cls : classes) {
+            boolean video = false, photos = false, audio = false;
+            var resolutions = new ArrayList<Method>();
+            for (var m : cls.getMethods()) {
+                if (isBridgeVideo(m)) video = true;
+                if (isBridgePhotos(m)) photos = true;
+                if (isBridgeAudio(m)) audio = true;
+                if (isBridgeResolution(m)) resolutions.add(m);
+            }
+            if (video && photos && audio) {
+                for (var m : resolutions) if (!bridgeRoom(m)) return List.of();
+                return resolutions;
+            }
+        }
+        return List.of();
+    }
+
     /** The menu a long press on a message opens on 587, which Messenger draws inside the chat with no dialog. */
     static final String REACTIONS_BAR = "Lcom/facebook/xapp/messaging/reactions/sendbar/fragment/ReactionsBarFragment;";
 

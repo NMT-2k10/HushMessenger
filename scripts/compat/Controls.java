@@ -142,6 +142,8 @@ final class Controls {
         }
         found.get("text_style").addAll(textStyleField(classes));
         found.get("message_log").addAll(messageLogHooks(classes));
+        // The vault's media bridge proves against the message log's contract, as validateVaultMediaBridge does.
+        if (!found.get("message_log").isEmpty()) found.get("vault_media_bridge").addAll(vaultMediaBridge(classes));
         var logButton = messageLogButton(classes);
         if (!logButton.isEmpty()) {
             found.get("message_log_button").add(logButton.get(0));
