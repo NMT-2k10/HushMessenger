@@ -264,6 +264,7 @@ private fun findControlsIn(classes: Iterable<ClassDef>, community: CommunityInbo
     found.getValue(TEXT_STYLE).addAll(findTextStyleField(classes))
     found.getValue(MESSAGE_LOG).addAll(findMessageLogHook(classes))
     found.getValue(AUTO_REPLY).addAll(findMessageLogHook(classes))
+    found.getValue(VAULT_MEDIA_BRIDGE).addAll(findVaultMediaBridge(classes))
     found.getValue(UNSENT_RECALL).addAll(findUnsentRecall(classes))
     found.getValue(UNSENT_CLEAR).addAll(findUnsentClear(classes))
     found.getValue(QUIET_LOG_CHECK).addAll(findQuietLogCheck(classes))

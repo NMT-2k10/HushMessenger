@@ -250,6 +250,7 @@ internal fun MutableMethod.validateHook(hook: String) {
         HOME_HEADER -> validateHomeHeader()
         TEXT_STYLE -> validateTextStyleField()
         MESSAGE_LOG, AUTO_REPLY -> validateMessageLog()
+        VAULT_MEDIA_BRIDGE -> validateVaultMediaBridge()
         MESSAGE_LOG_BUTTON -> validateMessageLogBar()
         MESSAGE_LOG_CLICK -> validateMessageLogClick()
         UNSENT_RECALL -> validateUnsentRecall()
@@ -397,6 +398,7 @@ internal fun injectControl(key: String, methods: Map<String, List<MutableMethod>
             HOME_HEADER -> method.injectHomeHeader()
             TEXT_STYLE -> method.injectTextStyleField()
             MESSAGE_LOG -> method.injectMessageLog()
+            VAULT_MEDIA_BRIDGE -> method.injectVaultMediaBridge()
             MESSAGE_LOG_BUTTON -> method.injectMessageLogBar()
             MESSAGE_LOG_CLICK -> method.injectMessageLogClick()
             UNSENT_RECALL -> method.injectUnsentRecall()
@@ -779,7 +781,7 @@ val keepMessageLogPatch = controlPatch("message_log", "Keep a message log",
 @Suppress("unused")
 val vault72hPatch = controlPatch("temporary_vault", "Temporary Vault (72 hours)",
     "Saves messages on this phone for 72 hours as they arrive and as an open chat shows them, so you can still read them if they're unsent, then deletes each copy when its 72 hours are up. View-once messages are never saved. Encrypted and stays on your phone. Photos, videos and voice are kept only with the switches under it on.", "Privacy",
-    MESSAGE_LOG, UNSENT_RECALL, UNSENT_CLEAR, "unsent_indicator")
+    MESSAGE_LOG, UNSENT_RECALL, UNSENT_CLEAR, "unsent_indicator", VAULT_MEDIA_BRIDGE)
 @Suppress("unused")
 val autoReplyPatch = controlPatch("auto_reply", "Auto reply",
     "Answers messages with replies you write in HushMessenger settings, when they have words you pick or any message at all. Replies go out through Messenger's own notification reply, encrypted chats too, at most once every five minutes per chat.", "Conversations")
