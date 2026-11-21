@@ -557,6 +557,132 @@ public class MessageLogAttachmentTest {
         assertEquals("/data/user/0/com.facebook.orca/cache/media/voice.mp4", found.address());
     }
 
+    /**
+     * A sticker is a photo-shaped attachment whose declared type says sticker. The vault files it as one —
+     * the device acceptance showed stickers filed as photos because only the data objects were read.
+     */
+    @Test public void aStickerDeclaresItselfByType() {
+        Message message = Message.with(com.facebook.messaging.model.attachment.Attachment.typed(
+            com.facebook.messaging.model.attachment.AttachmentType.STICKER,
+            ImageData.of(null, AttachmentImageMap.of(new ImageUrl(1440, 1920, BIG)))));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertEquals(MessageLogAttachment.STICKER, read.shapeKind);
+        assertNotNull(read.found);
+        assertEquals(BIG, read.found.address());
+        assertTrue(read.diag, read.diag.contains("typ=STICKER"));
+    }
+
+    /** An animated image declares itself by type, and a plain image type is overruled by a GIF format map. */
+    @Test public void anAnimatedImageIsFiledAsAGif() {
+        Message typed = Message.with(com.facebook.messaging.model.attachment.Attachment.typed(
+            com.facebook.messaging.model.attachment.AttachmentType.ANIMATED_IMAGE,
+            ImageData.of(null, AttachmentImageMap.of(new ImageUrl(480, 480, BIG)))));
+        assertEquals(MessageLogAttachment.GIF, MessageLogAttachment.inspectForVault(typed).shapeKind);
+        Message mapped = Message.with(com.facebook.messaging.model.attachment.Attachment.typed(
+            com.facebook.messaging.model.attachment.AttachmentType.IMAGE,
+            ImageData.of(null, AttachmentImageMap.gif(new ImageUrl(480, 480, BIG)))));
+        assertEquals(MessageLogAttachment.GIF, MessageLogAttachment.inspectForVault(mapped).shapeKind);
+    }
+
+    /**
+     * A voice clip in an encrypted chat arrives with its type declared and no audio data at all — the
+     * device acceptance showed it filed as a text message. The type alone files it as audio.
+     */
+    @Test public void aVoiceClipWithNoAudioDataIsFiledByItsType() {
+        Message message = Message.with(com.facebook.messaging.model.attachment.Attachment.typedOnly(
+            com.facebook.messaging.model.attachment.AttachmentType.AUDIO));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertEquals(MessageLogAttachment.AUDIO, read.shapeKind);
+        assertNull(read.found);
+        assertFalse(read.ephemeral);
+        assertTrue(read.diag, read.diag.contains("typ=AUDIO"));
+    }
+
+    /** A declared view-once type is refused on the type alone, whatever photo data rides under it. */
+    @Test public void aViewOnceTypeIsRefusedEvenWithPhotoData() {
+        Message message = Message.with(com.facebook.messaging.model.attachment.Attachment.typed(
+            com.facebook.messaging.model.attachment.AttachmentType.EPHEMERAL_IMAGE,
+            ImageData.of(null, AttachmentImageMap.of(new ImageUrl(1440, 1920, BIG)))));
+        assertTrue(MessageLogAttachment.inspectForVault(message).ephemeral);
+    }
+
+    /**
+     * What Messenger's resolver produced for a photo: the vault takes the addresses it can open — the file
+     * already on the phone first, then https, then http — and names every scheme it saw, including the
+     * internal reference it cannot open, without ever treating that reference as an address.
+     */
+    @Test public void resolvedPhotoDataYieldsTheResolversAddresses() {
+        com.facebook.messaging.attachments.ImageAttachmentData data =
+            com.facebook.messaging.attachments.ImageAttachmentData.of(
+                com.facebook.messaging.attachments.ImageAttachmentUris.of(
+                    Uri.parse("fbid:98765"), Uri.parse(BIG),
+                    Uri.parse("http://cdn.example.com/photo-m.jpg"),
+                    Uri.parse("/data/user/0/com.facebook.orca/cache/media/photo.jpg")), null);
+        MessageLogAttachment.Resolved resolved = MessageLogAttachment.resolved("photo", data);
+        assertNotNull(resolved.found);
+        assertEquals(MessageLogAttachment.PHOTO, resolved.found.kind);
+        assertEquals(List.of("/data/user/0/com.facebook.orca/cache/media/photo.jpg", BIG,
+            "http://cdn.example.com/photo-m.jpg"), List.of(resolved.found.addresses));
+        assertEquals("rsch=fbid+http+https+path", resolved.diag);
+    }
+
+    /** A photo resolution hands over a list; every photo in it contributes its addresses. */
+    @Test public void resolvedPhotoListCombinesEveryPhoto() {
+        com.facebook.messaging.attachments.ImageAttachmentData one =
+            com.facebook.messaging.attachments.ImageAttachmentData.of(
+                com.facebook.messaging.attachments.ImageAttachmentUris.of(Uri.parse(SMALL)), null);
+        com.facebook.messaging.attachments.ImageAttachmentData two =
+            com.facebook.messaging.attachments.ImageAttachmentData.of(
+                com.facebook.messaging.attachments.ImageAttachmentUris.of(Uri.parse(BIG)), null);
+        MessageLogAttachment.Resolved resolved =
+            MessageLogAttachment.resolved("photo", List.of(one, two));
+        assertNotNull(resolved.found);
+        assertEquals(List.of(SMALL, BIG), List.of(resolved.found.addresses));
+    }
+
+    /** The resolver's video and audio data yield their playable addresses, the resource's included. */
+    @Test public void resolvedVideoAndAudioDataYieldTheirAddresses() {
+        com.facebook.messaging.attachments.VideoAttachmentData video =
+            com.facebook.messaging.attachments.VideoAttachmentData.of(Uri.parse(MOVIE),
+                com.facebook.ui.media.attachments.model.MediaResource.of(
+                    com.facebook.ui.media.attachments.model.MediaResource.Kind.ENCRYPTED_VIDEO,
+                    Uri.parse("https://cdn.example.com/enc.mp4")));
+        MessageLogAttachment.Resolved resolvedVideo = MessageLogAttachment.resolved("video", video);
+        assertNotNull(resolvedVideo.found);
+        assertEquals(MessageLogAttachment.VIDEO, resolvedVideo.found.kind);
+        assertEquals(List.of(MOVIE, "https://cdn.example.com/enc.mp4"),
+            List.of(resolvedVideo.found.addresses));
+        com.facebook.messaging.attachments.AudioAttachmentData audio =
+            com.facebook.messaging.attachments.AudioAttachmentData.of(Uri.parse(ADDRESS));
+        MessageLogAttachment.Resolved resolvedAudio = MessageLogAttachment.resolved("audio", audio);
+        assertNotNull(resolvedAudio.found);
+        assertEquals(MessageLogAttachment.AUDIO, resolvedAudio.found.kind);
+        assertEquals(ADDRESS, resolvedAudio.found.address());
+    }
+
+    /** A resource that declares itself view-once is never read out of resolved data. */
+    @Test public void resolvedSkipsAnEphemeralResource() {
+        com.facebook.messaging.attachments.ImageAttachmentData data =
+            com.facebook.messaging.attachments.ImageAttachmentData.of(null,
+                com.facebook.ui.media.attachments.model.MediaResource.of(
+                    com.facebook.ui.media.attachments.model.MediaResource.Kind.EPHEMERAL_PHOTO,
+                    Uri.parse(BIG)));
+        MessageLogAttachment.Resolved resolved = MessageLogAttachment.resolved("photo", data);
+        assertNull(resolved.found);
+        assertEquals("rsch=-", resolved.diag);
+    }
+
+    /** An internal reference alone is named by its scheme and never taken as an address. */
+    @Test public void resolvedNamesAnUnopenableSchemeWithoutTakingIt() {
+        com.facebook.messaging.attachments.ImageAttachmentData data =
+            com.facebook.messaging.attachments.ImageAttachmentData.of(
+                com.facebook.messaging.attachments.ImageAttachmentUris.of(Uri.parse("fbid:98765")), null);
+        MessageLogAttachment.Resolved resolved = MessageLogAttachment.resolved("photo", data);
+        assertNull(resolved.found);
+        assertEquals("rsch=fbid", resolved.diag);
+        assertNull(MessageLogAttachment.resolved("photo", null).found);
+    }
+
     /** Clear takes the files with the messages, and Undo puts both back. */
     @Test public void clearAndUndoTakeTheClipAlong() throws Exception {
         MessageLog.storeNow(null, THREAD, ID);

@@ -143,6 +143,81 @@ public class Vault72hTest {
         assertTrue(all(T0 + 20_000).get(0).recalled());
     }
 
+    /**
+     * The encrypted-chat shape the device acceptance showed twice over: one message, two entries — the
+     * notification's, with the sender's name, and the chat row's, with a different id for the same message
+     * and no name at all. The two spellings of the id differ, so identity has to come from the words, the
+     * send time and the sender agreeing; the entry keeps the first id it was filed under.
+     */
+    @Test public void theSameMessageUnderTwoDifferentIdsMergesOnce() {
+        Vault72h.recordNow("👍", "thread-1", "msys-1", Vault72h.SOURCE_NOTIFICATION, null, 0, 0,
+            "Nguyễn Mạnh Tuấn", "", T0);
+        long rowId = Vault72h.recordRowNow("👍", "row-9", "tid-9", T0 + 4_000, 7, 0, 0, T0 + 30_000);
+        assertTrue(rowId > 0);
+        List<Vault72h.Entry> entries = all(T0 + 30_000);
+        assertEquals(1, entries.size());
+        assertEquals("msys-1", entries.get(0).msgId);
+        assertEquals("Nguyễn Mạnh Tuấn", entries.get(0).sender);
+    }
+
+    /** The same words sent twice are two messages: five minutes apart, the send times refuse the merge. */
+    @Test public void theSameWordsSentTwiceStayTwoEntries() {
+        capture("👍", "thread-1", "first", T0);
+        capture("👍", "thread-1", "second", T0 + 5 * 60_000);
+        assertEquals(2, all(T0 + 5 * 60_000).size());
+    }
+
+    /**
+     * An entry written before its sender's name could be read holds an empty name, and a later capture of
+     * the same message has to fill it — the fill once waited for a missing value that never occurs, so a
+     * name arriving late never landed.
+     */
+    @Test public void aNameArrivingLaterFillsAnEntryThatHadNone() {
+        Vault72h.recordNow("chào", "thread-1", "x1", Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0);
+        Vault72h.recordNow("chào", "thread-1", "x1", Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "Bình", "",
+            T0 + 1_000);
+        List<Vault72h.Entry> entries = all(T0 + 1_000);
+        assertEquals(1, entries.size());
+        assertEquals("Bình", entries.get(0).sender);
+    }
+
+    /** A message that is only an emoji is filed as one; words with an emoji in them stay text. */
+    @Test public void emojiOnlyMessagesAreFiledAsEmoji() {
+        capture("👍", "thread-1", "e1", T0);
+        capture("👍 đẹp quá", "thread-1", "e2", T0);
+        List<Vault72h.Entry> entries = all(T0);
+        assertEquals(2, entries.size());
+        for (Vault72h.Entry entry : entries) {
+            if ("e1".equals(entry.msgId)) assertEquals(Vault72h.KIND_EMOJI, entry.kind);
+            if ("e2".equals(entry.msgId)) assertEquals(Vault72h.KIND_TEXT, entry.kind);
+        }
+        assertTrue(Vault72h.isEmojiOnly("👍🏽"));
+        assertTrue(Vault72h.isEmojiOnly("😀 😀"));
+        assertFalse(Vault72h.isEmojiOnly("a👍"));
+        assertFalse(Vault72h.isEmojiOnly(""));
+    }
+
+    /** A sticker's scan shape refines the photo kind its data alone would have filed it under. */
+    @Test public void aStickerShapeRefinesAPhotoCapture() {
+        Vault72h.recordNow("Đã gửi một nhãn dán.", "thread-1", "stk-1", Vault72h.SOURCE_NOTIFICATION,
+            new MessageLogAttachment.Found("https://cdn.example.com/s.png", MessageLogAttachment.PHOTO),
+            0, 0, "An", "", T0, MessageLogAttachment.STICKER, "att=1 typ=STICKER");
+        List<Vault72h.Entry> entries = all(T0);
+        assertEquals(1, entries.size());
+        assertEquals(Vault72h.KIND_STICKER, entries.get(0).kind);
+    }
+
+    /** A voice clip whose scan found no address is still filed as audio, with the reason on it. */
+    @Test public void aVoiceShapeFilesACaptureAsAudio() {
+        Vault72h.recordNow("Đã gửi tin nhắn âm thanh cho bạn", "thread-1", "vc-1",
+            Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "An", "", T0,
+            MessageLogAttachment.AUDIO, "att=1 typ=AUDIO");
+        List<Vault72h.Entry> entries = all(T0);
+        assertEquals(1, entries.size());
+        assertEquals(Vault72h.KIND_AUDIO, entries.get(0).kind);
+        assertEquals(Vault72h.MEDIA_NO_ADDRESS, entries.get(0).mediaStatus);
+    }
+
     /** Two different messages that happen to share their words are two entries: each carries its own id. */
     @Test public void twoDifferentMessagesWithTheSameWordsStayTwoEntries() {
         capture("ok", "thread-1", "mA", T0);
