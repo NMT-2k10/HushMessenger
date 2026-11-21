@@ -306,6 +306,9 @@ hook unsent_indicator LX/5h8;->CpT(I)Ljava/lang/String;
 hook unsent_indicator LX/Yx1;->CpT(I)Ljava/lang/String;
 hook unsent_indicator LX/cQj;->CpT(I)Ljava/lang/String;
 hook unsent_recall LX/9y7;->A00(Lcom/facebook/auth/usersession/FbUserSession;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z
+hook vault_media_bridge LX/4TJ;->A0A(Lcom/facebook/messaging/model/messages/Message;Ljava/lang/String;)Lcom/facebook/messaging/attachments/AudioAttachmentData;
+hook vault_media_bridge LX/4TJ;->A0C(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/facebook/messaging/attachments/VideoAttachmentData;
+hook vault_media_bridge LX/4TJ;->A0E(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/google/common/collect/ImmutableList;
 hook view_once_anywhere LX/5GP;->render(LX/5Qz;LX/5pN;Lcom/facebook/xapp/messaging/capability/vector/Capabilities;)V
 hook wifi_identity LX/1af;->A02()LX/auK;
 hook wifi_identity LX/38P;->BD3()Ljava/lang/String;
