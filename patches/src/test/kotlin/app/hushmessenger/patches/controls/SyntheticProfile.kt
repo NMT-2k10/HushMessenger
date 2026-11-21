@@ -131,6 +131,11 @@ internal val syntheticHooks: Map<String, Set<String>> = mapOf(
     MARK_READ_CLICK to setOf(SYNTHETIC_MARK_READ_CLICK),
     TEXT_STYLE to setOf(SYNTHETIC_TEXT_FIELD_SELECTION),
     MESSAGE_LOG to setOf(newMessageNotificationCtor("LX/5qJ;", "LX/5Yc;")),
+    VAULT_MEDIA_BRIDGE to setOf(
+        "LX/B7x;->A0C(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/facebook/messaging/attachments/VideoAttachmentData;",
+        "LX/B7x;->A0E(Lcom/facebook/auth/usersession/FbUserSession;Lcom/facebook/messaging/model/messages/Message;)Lcom/google/common/collect/ImmutableList;",
+        "LX/B7x;->A0A(Lcom/facebook/messaging/model/messages/Message;Ljava/lang/String;)Lcom/facebook/messaging/attachments/AudioAttachmentData;",
+    ),
     MESSAGE_LOG_BUTTON to setOf(SYNTHETIC_LOG_BAR),
     MESSAGE_LOG_CLICK to setOf(SYNTHETIC_LOG_CLICK),
     AUTO_REPLY to setOf(newMessageNotificationCtor("LX/5qJ;", "LX/5Yc;")),
