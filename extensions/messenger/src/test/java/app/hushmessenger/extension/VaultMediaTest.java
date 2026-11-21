@@ -48,6 +48,17 @@ public class VaultMediaTest {
         assertEquals(promised.length, total);
     }
 
+    /** A body that arrives longer than its headers announced — decompressed on the way — is whole at its end. */
+    @Test public void aLongerThanAnnouncedDownloadReadsClean() throws Exception {
+        byte[] body = "0123456789".getBytes(StandardCharsets.UTF_8);
+        InputStream counted = VaultMedia.counted(new ByteArrayInputStream(body), 4);
+        int total = 0;
+        byte[] buffer = new byte[4];
+        int read;
+        while ((read = counted.read(buffer)) != -1) total += read;
+        assertEquals(body.length, total);
+    }
+
     /** A file on the phone opens as itself, byte for byte. */
     @Test public void aLocalFileOpensAsItself() throws Exception {
         java.io.File file = java.io.File.createTempFile("vault-media", ".jpg");
@@ -71,6 +82,32 @@ public class VaultMediaTest {
             assertArrayEquals(bytes, in.readAllBytes());
         } finally {
             file.delete();
+        }
+    }
+
+    /** The fetch order: web addresses before the media store, and the store before anything else. */
+    @Test public void theFetchOrderPutsTheMediaStoreAfterWebAddresses() {
+        MessageLogAttachment.Found found = new MessageLogAttachment.Found(new String[] {
+            "msys://ae-media/222?sha256=bbb",
+            "http://cdn.example.com/photo-m.jpg",
+            "https://cdn.example.com/photo-l.jpg"},
+            MessageLogAttachment.PHOTO);
+        assertEquals(java.util.List.of(
+            "https://cdn.example.com/photo-l.jpg",
+            "msys://ae-media/222?sha256=bbb",
+            "http://cdn.example.com/photo-m.jpg"), VaultMedia.ordered(found));
+    }
+
+    /** A media-store reference opens through the app's content resolver, byte for byte. */
+    @Test public void aMediaStoreReferenceOpensThroughTheProvider() throws Exception {
+        byte[] bytes = "the decrypted photo".getBytes(StandardCharsets.UTF_8);
+        java.util.function.Function<String, InputStream> kept = VaultMedia.providerOpener;
+        VaultMedia.providerOpener = address -> new ByteArrayInputStream(bytes);
+        try (InputStream in = VaultMedia.open("msys://ae-media/222?sha256=bbb")) {
+            assertNotNull(in);
+            assertArrayEquals(bytes, in.readAllBytes());
+        } finally {
+            VaultMedia.providerOpener = kept;
         }
     }
 

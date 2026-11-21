@@ -564,6 +564,56 @@ public class Vault72hTest {
         assertArrayEquals(picture, Vault72h.openMedia(context, entry));
     }
 
+    /**
+     * A resolution delivery can name its message differently from the entry the arrival archived — the
+     * surfaces spell one message's id in their own ways. With exactly one recent entry of the delivery's
+     * kind still waiting for its media, the delivery is that entry's, under the entry's own id.
+     */
+    @Test public void resolvedMediaFindsItsEntryWhenTheDeliveryNamesItDifferently() throws Exception {
+        Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
+        assertTrue(Vault72h.recordNow("Đã gửi một ảnh cho bạn", "thread-1", "notif-spelling",
+            Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0,
+            MessageLogAttachment.PHOTO, "att=1 typ=IMAGE img=1 maps=n,4 asch=msys") > 0);
+        byte[] picture = new byte[2048];
+        new SecureRandom().nextBytes(picture);
+        File local = new File(context.getCacheDir(), "resolved-photo-2.jpg");
+        java.nio.file.Files.write(local.toPath(), picture);
+        MessageLogAttachment.Found found = new MessageLogAttachment.Found(
+            new String[] {local.toURI().toString()}, MessageLogAttachment.PHOTO);
+        assertTrue(Vault72h.attachFoundNow("thread-spelling", found, "rsch=msys", T0));
+        Vault72h.Entry entry = awaitMedia(T0);
+        assertNotNull(entry);
+        assertEquals("notif-spelling", entry.msgId);
+        assertEquals(Vault72h.MEDIA_STORED, entry.mediaStatus);
+        assertArrayEquals(picture, Vault72h.openMedia(context, entry));
+    }
+
+    /** Two recent entries could be a differently-named delivery's either one: it is filed under neither. */
+    @Test public void resolvedMediaWithTwoCandidateEntriesIsDropped() {
+        assertTrue(Vault72h.recordNow("Đã gửi một ảnh cho bạn", "thread-1", "photo-a",
+            Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0,
+            MessageLogAttachment.PHOTO, "att=1 typ=IMAGE") > 0);
+        assertTrue(Vault72h.recordNow("Đã gửi một ảnh cho bạn", "thread-1", "photo-b",
+            Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0,
+            MessageLogAttachment.PHOTO, "att=1 typ=IMAGE") > 0);
+        MessageLogAttachment.Found found = new MessageLogAttachment.Found(
+            new String[] {"https://example.test/photo.jpg"}, MessageLogAttachment.PHOTO);
+        assertFalse(Vault72h.attachFoundNow("third-spelling", found, "", T0));
+        for (Vault72h.Entry entry : all(T0)) {
+            assertEquals(Vault72h.MEDIA_NO_ADDRESS, entry.mediaStatus);
+        }
+    }
+
+    /** A delivery long after the fact no longer matches by kind alone: its window has closed. */
+    @Test public void resolvedMediaForAStaleEntryIsDropped() {
+        assertTrue(Vault72h.recordNow("Đã gửi một ảnh cho bạn", "thread-1", "photo-old",
+            Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0,
+            MessageLogAttachment.PHOTO, "att=1 typ=IMAGE") > 0);
+        MessageLogAttachment.Found found = new MessageLogAttachment.Found(
+            new String[] {"https://example.test/photo.jpg"}, MessageLogAttachment.PHOTO);
+        assertFalse(Vault72h.attachFoundNow("other-spelling", found, "", T0 + 20 * 60_000L));
+    }
+
     /** Resolution for a message the vault never archived creates nothing. */
     @Test public void resolvedMediaForAnUnknownMessageCreatesNothing() {
         MessageLogAttachment.Found found = new MessageLogAttachment.Found(

@@ -524,6 +524,33 @@ public class MessageLogAttachmentTest {
         assertFalse(read.diag, read.diag.contains("secureref"));
     }
 
+    /** An encrypted chat names its photo through the app's own media store, and that reference is the vault's. */
+    @Test public void theVaultTakesAPhotoCarriedAsMediaStoreReferences() {
+        Message message = Message.with(Attachment.image(ImageData.of(null,
+            AttachmentImageMap.of(
+                new ImageUrl(240, 180, "msys://ae-media/111?sha256=aaa"),
+                new ImageUrl(720, 960, "msys://ae-media/222?sha256=bbb")))));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertNotNull(read.found);
+        assertEquals(2, read.found.addresses.length);
+        assertEquals("msys://ae-media/222?sha256=bbb", read.found.addresses[0]);
+        assertEquals("msys://ae-media/111?sha256=aaa", read.found.addresses[1]);
+        assertTrue(read.diag, read.diag.contains("asch=msys"));
+    }
+
+    /** A media-store reference ranks with the web address of a size: the bigger size is tried first either way. */
+    @Test public void theVaultRanksAMediaStoreReferenceWithItsSizesWebAddress() {
+        Message message = Message.with(Attachment.image(ImageData.of(null,
+            AttachmentImageMap.of(
+                new ImageUrl(240, 180, SMALL),
+                new ImageUrl(720, 960, "msys://ae-media/222?sha256=bbb")))));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertNotNull(read.found);
+        assertEquals("msys://ae-media/222?sha256=bbb", read.found.addresses[0]);
+        assertEquals(SMALL, read.found.addresses[1]);
+        assertTrue(read.diag, read.diag.contains("asch=https+msys"));
+    }
+
     /** Entries whose address string never arrived are counted in the fingerprint, and give the vault nothing. */
     @Test public void theVaultCountsPhotoEntriesWithoutAnAddress() {
         Message message = Message.with(Attachment.image(ImageData.of(null,
@@ -627,6 +654,20 @@ public class MessageLogAttachmentTest {
     }
 
     /** A photo resolution hands over a list; every photo in it contributes its addresses. */
+    /** Resolved data carrying a media-store reference: taken, after the web address and before plain http. */
+    @Test public void resolvedMediaStoreReferencesAreTaken() {
+        com.facebook.messaging.attachments.ImageAttachmentData data =
+            com.facebook.messaging.attachments.ImageAttachmentData.of(
+                com.facebook.messaging.attachments.ImageAttachmentUris.of(
+                    Uri.parse("msys://ae-media/222?sha256=bbb"), Uri.parse(BIG),
+                    Uri.parse("http://cdn.example.com/photo-m.jpg"), null), null);
+        MessageLogAttachment.Resolved resolved = MessageLogAttachment.resolved("photo", data);
+        assertNotNull(resolved.found);
+        assertEquals(List.of(BIG, "msys://ae-media/222?sha256=bbb",
+            "http://cdn.example.com/photo-m.jpg"), List.of(resolved.found.addresses));
+        assertEquals("rsch=http+https+msys", resolved.diag);
+    }
+
     @Test public void resolvedPhotoListCombinesEveryPhoto() {
         com.facebook.messaging.attachments.ImageAttachmentData one =
             com.facebook.messaging.attachments.ImageAttachmentData.of(
