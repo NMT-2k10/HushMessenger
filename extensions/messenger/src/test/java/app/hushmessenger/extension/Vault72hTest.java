@@ -268,7 +268,16 @@ public class Vault72hTest {
         MessageLogAttachment.Found found = new MessageLogAttachment.Found(
             new String[] {"https://example.test/p.jpg"}, MessageLogAttachment.PHOTO);
         Vault72h.recordNow(null, "thread-1", "m17", Vault72h.SOURCE_NOTIFICATION, found, 0, 0, "", "", T0);
-        assertNotNull(awaitMedia(T0));
+        // Await m17 itself, not whichever entry sorts first: m16 shares its timestamp, and awaiting the
+        // text entry would let clearAll race the still-running fetch.
+        Vault72h.Entry media = null;
+        for (int i = 0; i < 200 && media == null; i++) {
+            for (Vault72h.Entry entry : all(T0)) {
+                if ("m17".equals(entry.msgId) && !Vault72h.MEDIA_PENDING.equals(entry.mediaStatus)) media = entry;
+            }
+            if (media == null) Thread.sleep(25);
+        }
+        assertNotNull(media);
         assertTrue(Vault72h.clearAll());
         assertEquals(0, all(T0).size());
         assertEquals(0, Vault72h.stats(T0).entries);
