@@ -424,6 +424,78 @@ public class Vault72hTest {
         return false;
     }
 
+    /**
+     * A photo whose message carried no address — the encrypted-chat shape — is still filed as a photo, with
+     * the no-address state and the scan's fingerprint on it, and it shows under the media filter instead of
+     * passing for a text message.
+     */
+    @Test public void aPhotoShapedCaptureIsFiledAsAPhotoWithItsReason() {
+        long rowId = Vault72h.recordNow("Đã gửi một ảnh cho bạn", "thread-1", "m29",
+            Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0,
+            MessageLogAttachment.PHOTO, "att=1 img=1 maps=0,0");
+        assertTrue(rowId > 0);
+        List<Vault72h.Entry> entries = all(T0);
+        assertEquals(1, entries.size());
+        Vault72h.Entry entry = entries.get(0);
+        assertEquals(Vault72h.KIND_PHOTO, entry.kind);
+        assertEquals(Vault72h.MEDIA_NO_ADDRESS, entry.mediaStatus);
+        assertEquals("att=1 img=1 maps=0,0", entry.diag);
+        assertEquals(1, Vault72h.entries(Vault72h.Filter.MEDIA, null, "", T0).size());
+    }
+
+    /**
+     * Media resolved later, when Messenger's thread view resolves the message, attaches to the entry the
+     * arrival archived and is fetched and sealed like any captured media.
+     */
+    @Test public void resolvedMediaAttachesToTheEntryAndIsFetched() throws Exception {
+        Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
+        assertTrue(Vault72h.recordNow("Đã gửi một ảnh cho bạn", "thread-1", "m30",
+            Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0,
+            MessageLogAttachment.PHOTO, "att=1 img=1 maps=0,0") > 0);
+        byte[] picture = new byte[4096];
+        new SecureRandom().nextBytes(picture);
+        File local = new File(context.getCacheDir(), "resolved-photo.jpg");
+        java.nio.file.Files.write(local.toPath(), picture);
+        MessageLogAttachment.Found found = new MessageLogAttachment.Found(
+            new String[] {local.toURI().toString()}, MessageLogAttachment.PHOTO);
+        assertTrue(Vault72h.attachFoundNow("m30", found, "att=1 mr=1 uris=file", T0));
+        Vault72h.Entry entry = awaitMedia(T0);
+        assertNotNull(entry);
+        assertEquals(Vault72h.MEDIA_STORED, entry.mediaStatus);
+        assertEquals(Vault72h.KIND_PHOTO, entry.kind);
+        assertArrayEquals(picture, Vault72h.openMedia(context, entry));
+    }
+
+    /** Resolution for a message the vault never archived creates nothing. */
+    @Test public void resolvedMediaForAnUnknownMessageCreatesNothing() {
+        MessageLogAttachment.Found found = new MessageLogAttachment.Found(
+            new String[] {"https://example.test/photo.jpg"}, MessageLogAttachment.PHOTO);
+        assertFalse(Vault72h.attachFoundNow("never-archived", found, "", T0));
+        assertEquals(0, all(T0).size());
+    }
+
+    /** Resolved view-once media is refused, and a fingerprint alone still lands on the entry it describes. */
+    @Test public void resolvedViewOnceIsRefusedButAFingerprintStillLands() {
+        assertTrue(Vault72h.recordNow("mmb", "thread-1", "m31", Vault72h.SOURCE_NOTIFICATION,
+            null, 0, 0, "", "", T0) > 0);
+        MessageLogAttachment.Found ephemeral = new MessageLogAttachment.Found(new String[0],
+            MessageLogAttachment.EPHEMERAL);
+        assertFalse(Vault72h.attachFoundNow("m31", ephemeral, "", T0));
+        assertTrue(Vault72h.attachFoundNow("m31", null, "att=1 mr=1 uris=file", T0));
+        Vault72h.Entry entry = all(T0).get(0);
+        assertEquals("att=1 mr=1 uris=file", entry.diag);
+        assertEquals(Vault72h.MEDIA_NONE, entry.mediaStatus);
+    }
+
+    /** An entry with nothing stored can't be exported to the gallery, and says so at once. */
+    @Test public void anEntryWithoutMediaIsNotExportedToTheGallery() {
+        assertTrue(Vault72h.recordNow("mmb", "thread-1", "m32", Vault72h.SOURCE_NOTIFICATION,
+            null, 0, 0, "", "", T0) > 0);
+        boolean[] saved = {true};
+        Vault72h.exportToGallery(context, all(T0).get(0), done -> saved[0] = done);
+        assertFalse(saved[0]);
+    }
+
     /** Waits for the media thread to settle an entry's media status, and returns that entry. */
     private Vault72h.Entry awaitMedia(long now) throws Exception {
         for (int i = 0; i < 200; i++) {

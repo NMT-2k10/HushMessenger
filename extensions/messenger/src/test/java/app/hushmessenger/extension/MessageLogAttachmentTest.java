@@ -399,6 +399,82 @@ public class MessageLogAttachmentTest {
         assertEquals(0, found.addresses.length);
     }
 
+    /**
+     * The encrypted-chat shape from the device: the attachment's image maps are there but empty, and the
+     * message's media resource carries the photo as a file Messenger already fetched and decrypted. The
+     * vault's scan finds it there, under its encrypted kind.
+     */
+    @Test public void theVaultScanFindsAnEncryptedPhotoOnTheMediaResource() {
+        Message message = Message.withMedia(
+            Attachment.image(ImageData.of(AttachmentImageMap.of(), AttachmentImageMap.of())),
+            com.facebook.ui.media.attachments.model.MediaResource.of(
+                com.facebook.ui.media.attachments.model.MediaResource.Kind.ENCRYPTED_PHOTO,
+                Uri.parse("file:///data/user/0/com.facebook.orca/cache/media/photo-1.jpg")));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertFalse(read.ephemeral);
+        assertNotNull(read.found);
+        assertEquals(MessageLogAttachment.PHOTO, read.found.kind);
+        assertEquals("file:///data/user/0/com.facebook.orca/cache/media/photo-1.jpg", read.found.address());
+        assertEquals(MessageLogAttachment.PHOTO, read.shapeKind);
+        assertTrue(read.diag, read.diag.contains("maps=0,0"));
+        assertTrue(read.diag, read.diag.contains("ENCRYPTED_PHOTO"));
+        assertTrue(read.diag, read.diag.contains("file"));
+        assertFalse(read.diag, read.diag.contains("photo-1.jpg"));
+    }
+
+    /** A video the thread view would resolve from a media resource: its web address is the vault's to fetch. */
+    @Test public void theVaultScanFindsAVideoOnTheMediaResource() {
+        Message message = Message.withMedia(
+            Attachment.video(new VideoData(null, null)),
+            com.facebook.ui.media.attachments.model.MediaResource.of(
+                com.facebook.ui.media.attachments.model.MediaResource.Kind.VIDEO, Uri.parse(MOVIE)));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertNotNull(read.found);
+        assertEquals(MessageLogAttachment.VIDEO, read.found.kind);
+        assertEquals(MOVIE, read.found.address());
+        assertEquals(MessageLogAttachment.VIDEO, read.shapeKind);
+    }
+
+    /**
+     * When nothing on the message can be fetched, the scan still names the kind and fingerprints what the
+     * message carried, so the entry is filed as a photo with the reason on it instead of as a text message.
+     */
+    @Test public void theVaultScanNamesTheShapeWhenNothingCanBeFetched() {
+        Message message = Message.with(Attachment.image(ImageData.of(
+            AttachmentImageMap.of(), AttachmentImageMap.of())));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertNull(read.found);
+        assertFalse(read.ephemeral);
+        assertEquals(MessageLogAttachment.PHOTO, read.shapeKind);
+        assertTrue(read.diag, read.diag.contains("img=1"));
+        assertTrue(read.diag, read.diag.contains("maps=0,0"));
+    }
+
+    /** A view-once message's media resources are never read, even when one carries a usable address. */
+    @Test public void theVaultScanNeverReadsAViewOnceMessagesResources() {
+        Message message = Message.withMedia(
+            Attachment.ephemeral(ImageData.of(AttachmentImageMap.of(), AttachmentImageMap.of())),
+            com.facebook.ui.media.attachments.model.MediaResource.of(
+                com.facebook.ui.media.attachments.model.MediaResource.Kind.PHOTO,
+                Uri.parse("file:///data/user/0/com.facebook.orca/cache/media/photo-2.jpg")));
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+        assertTrue(read.ephemeral);
+        assertNull(read.found);
+    }
+
+    /** An https address in the attachment's extra string map is a copy the message itself carried. */
+    @Test public void theVaultScanFindsAnAddressInTheAttachmentsExtraMap() {
+        Attachment attachment = Attachment.image(ImageData.of(
+            AttachmentImageMap.of(), AttachmentImageMap.of()));
+        attachment.A09 = new java.util.HashMap<>();
+        attachment.A09.put("is_preview", "0");
+        attachment.A09.put("media", BIG);
+        MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(Message.with(attachment));
+        assertNotNull(read.found);
+        assertEquals(MessageLogAttachment.PHOTO, read.found.kind);
+        assertEquals(BIG, read.found.address());
+    }
+
     /** Clear takes the files with the messages, and Undo puts both back. */
     @Test public void clearAndUndoTakeTheClipAlong() throws Exception {
         MessageLog.storeNow(null, THREAD, ID);
