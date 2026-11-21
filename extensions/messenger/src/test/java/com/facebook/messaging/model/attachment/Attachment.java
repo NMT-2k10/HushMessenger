@@ -11,6 +11,7 @@ public final class Attachment {
     public EphemeralMediaData A06;
     public ImageData A07;
     public VideoData A08;
+    public java.util.Map<String, String> A09;
     public String A0C;
     public String A0J;
     public String A0L;
