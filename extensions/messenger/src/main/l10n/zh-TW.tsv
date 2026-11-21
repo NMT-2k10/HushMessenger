@@ -986,3 +986,6 @@ temporary_vault_keep_videos	在保管庫中保留影片
 temporary_vault_keep_videos_help	開啟時，隨訊息到達的影片會在保管庫中保留相同的 72 小時，並在背景下載。關閉時，只保留訊息的文字。
 temporary_vault_keep_voice	在保管庫中保留語音訊息
 temporary_vault_keep_voice_help	開啟時，語音訊息會在保管庫中保留相同的 72 小時。關閉時，只記錄曾有一則語音訊息到達。
+vault_save_gallery	儲存到相簿
+vault_saved_gallery	已儲存到你的相簿
+vault_save_gallery_failed	無法儲存到相簿

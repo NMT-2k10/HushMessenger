@@ -986,3 +986,6 @@ temporary_vault_keep_videos	Giữ video trong Kho
 temporary_vault_keep_videos_help	Khi bật, video đi kèm tin nhắn sẽ được lưu trong Kho trong cùng 72 giờ và được tải xuống ở chế độ nền. Khi tắt, chỉ nội dung chữ của tin nhắn được giữ.
 temporary_vault_keep_voice	Giữ tin nhắn thoại trong Kho
 temporary_vault_keep_voice_help	Khi bật, tin nhắn thoại sẽ được lưu trong Kho trong cùng 72 giờ. Khi tắt, chỉ ghi nhận rằng đã có một tin nhắn thoại đến.
+vault_save_gallery	Lưu vào thư viện
+vault_saved_gallery	Đã lưu vào thư viện của bạn
+vault_save_gallery_failed	Không lưu được vào thư viện

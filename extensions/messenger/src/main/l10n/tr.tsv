@@ -986,3 +986,6 @@ temporary_vault_keep_videos	Videoları Kasada sakla
 temporary_vault_keep_videos_help	Açıkken, bir mesajla gelen video Kasada aynı 72 saat boyunca saklanır ve arka planda indirilir. Kapalıyken yalnızca mesajın metni saklanır.
 temporary_vault_keep_voice	Sesli mesajları Kasada sakla
 temporary_vault_keep_voice_help	Açıkken, bir sesli mesaj Kasada aynı 72 saat boyunca saklanır. Kapalıyken yalnızca bir sesli mesajın geldiği kaydedilir.
+vault_save_gallery	Galeriye kaydet
+vault_saved_gallery	Galerinize kaydedildi
+vault_save_gallery_failed	Galeriye kaydedilemedi
