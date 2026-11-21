@@ -82,9 +82,18 @@ internal fun MutableMethod.validateVaultMediaBridge() {
  * Each resolution is also met at its returns: what the resolver produced — the photo list, the video data,
  * the audio data — goes over with the same id. A message's own objects carry references in forms only
  * Messenger's parser accepts; the resolver's output is where the plain addresses Messenger itself was
- * about to load exist, above all in encrypted chats. The hand-off reads one local register the return
- * doesn't hold its value in, and the extension ignores a null result, so a resolution that produced
- * nothing hands over nothing.
+ * about to load exist, above all in encrypted chats. The extension ignores a null result, so a resolution
+ * that produced nothing hands over nothing.
+ *
+ * The hand-off's register discipline is the load-bearing part. Its two scratch registers are chosen per
+ * return point from the method's own locals and are never the register the return itself reads, and
+ * never the message's parameter register: the block only ever reads the result and the message, and
+ * writes only its scratch pair, so the return that follows it hands back exactly what the stock code
+ * put in its register. A fixed low pair breaks this the day a resolution returns in one of them — the
+ * photo resolution returns its list in v0 at every return in the tested build, so writing the message
+ * and its id into v0 on the way past replaced the list with the id string, and a caller trusting the
+ * declared return type (the media prefetcher calls the list's iterator with no cast) died in native
+ * code on a thread-pool thread.
  */
 internal fun MutableMethod.injectVaultMediaBridge() {
     validateVaultMediaBridge()
@@ -111,19 +120,33 @@ internal fun MutableMethod.injectVaultMediaBridge() {
     val messageRegister = registers - if (isBridgeAudio()) 2 else 1
     val returns = implementation!!.instructions.withIndex()
         .filter { it.value.opcode == Opcode.RETURN_OBJECT }.map { it.index }
-    // Last return first, so an insertion never shifts the index of a return still to be met. The two
-    // lowest registers are the scratch pair: the result is copied out of harm's way first, then the
-    // message, whose id replaces it in the other. Neither is a parameter register, and nothing after
-    // the insertion reads them but the return itself, which keeps its own register.
-    for (at in returns.asReversed()) {
+    // Per return point, two scratch locals that are neither the register the return reads nor each
+    // other; the message's register is a parameter, so it is never among the locals to begin with.
+    // Chosen before any insertion, while the indices still name the stock instructions.
+    val parameterWords = parameterTypes.sumOf { if (it == "J" || it == "D") 2 else 1 } + 1
+    val locals = registers - parameterWords
+    val blocks = returns.map { at ->
+        val returned = (getInstruction(at) as OneRegisterInstruction).registerA
+        val scratch = (0 until locals).filter { it != returned }
+        if (scratch.size < 2) {
+            throw PatchException("Messenger controls: ${hookId()} has no two local registers to hand " +
+                "its result over with at its return $at")
+        }
+        Triple(at, scratch[0], scratch[1])
+    }
+    // Last return first, so an insertion never shifts the index of a return still to be met. The result
+    // is copied into one scratch register, the message into the other, and the message's id replaces the
+    // message there — the register the return reads is never written, so the stock return below hands
+    // back exactly what the resolution produced.
+    for ((at, result, holder) in blocks.asReversed()) {
         val returned = (getInstruction(at) as OneRegisterInstruction).registerA
         val label = "vault_resolved_$at"
         addInstructionsWithLabels(at, """
-            move-object/from16 v1, v$returned
-            move-object/from16 v0, v$messageRegister
-            if-eqz v0, :$label
-            iget-object v0, v0, ${contract.messageIdField}
-            invoke-static {v0, v1}, $resolved
+            move-object/from16 v$result, v$returned
+            move-object/from16 v$holder, v$messageRegister
+            if-eqz v$holder, :$label
+            iget-object v$holder, v$holder, ${contract.messageIdField}
+            invoke-static {v$holder, v$result}, $resolved
         """.trimIndent(), ExternalLabel(label, getInstruction(at)))
     }
 }
