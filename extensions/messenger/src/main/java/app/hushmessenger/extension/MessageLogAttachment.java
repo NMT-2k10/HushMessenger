@@ -44,6 +44,9 @@ final class MessageLogAttachment {
 
     /** The kind {@link #foundForVault} reports for a message whose media is view-once (ephemeral). */
     static final String EPHEMERAL = "ephemeral";
+    static final String STICKER = "sticker";
+    static final String GIF = "gif";
+    static final String FILE = "file";
 
     /** What an entry's media is when the kept file is a voice clip. A photo keeps the empty kind a picture always had. */
     static final String AUDIO = "audio";
@@ -190,6 +193,91 @@ final class MessageLogAttachment {
     }
 
     /**
+     * The shape an attachment's own type names, or null when the attachment carries no type the vault files by.
+     * Messenger declares what an attachment IS in an enum on the attachment itself — sticker, image, animated
+     * image, video, audio, file, and the two view-once kinds — independently of which data objects it bothered
+     * to fill: a voice clip in an encrypted chat arrives with the type set and no audio data at all, and a
+     * sticker is a photo-shaped attachment whose type says sticker. The enum is found by its constants, not its
+     * class name, so the read survives obfuscation: an enum field whose constants include IMAGE, VIDEO and
+     * AUDIO is the attachment type, and its value's name is the declaration.
+     */
+    private static String attachmentTypeShape(Object attachment) {
+        String name = attachmentTypeName(attachment);
+        return name == null ? null : shapeForTypeName(name);
+    }
+
+    /** The name of an attachment's declared type, or null when it declares none the vault recognizes. */
+    private static String attachmentTypeName(Object attachment) {
+        try {
+            for (Field field : attachment.getClass().getDeclaredFields()) {
+                if (!field.getType().isEnum()) continue;
+                field.setAccessible(true);
+                Object value = field.get(attachment);
+                if (value == null) continue;
+                Object[] constants = field.getType().getEnumConstants();
+                if (constants == null) continue;
+                boolean image = false, video = false, audio = false;
+                for (Object constant : constants) {
+                    String constantName = ((Enum<?>) constant).name();
+                    if ("IMAGE".equals(constantName)) image = true;
+                    else if ("VIDEO".equals(constantName)) video = true;
+                    else if ("AUDIO".equals(constantName)) audio = true;
+                }
+                if (image && video && audio) return ((Enum<?>) value).name();
+            }
+        } catch (Throwable unreadable) {
+            // No declared type; the data objects still speak for the attachment.
+        }
+        return null;
+    }
+
+    /** The vault shape a declared attachment type names, or null for a type with no media of its own. */
+    private static String shapeForTypeName(String name) {
+        switch (name) {
+            case "STICKER": case "SELFIE_STICKER": case "THIRD_PARTY_STICKER": return STICKER;
+            case "ANIMATED_IMAGE": return GIF;
+            case "IMAGE": return PHOTO;
+            case "VIDEO": return VIDEO;
+            case "AUDIO": return AUDIO;
+            case "FILE": return FILE;
+            case "EPHEMERAL_IMAGE": case "EPHEMERAL_VIDEO": return EPHEMERAL;
+            default: return null;
+        }
+    }
+
+    /**
+     * Whether either of a photo's size maps declares itself a GIF. A size map carries its file format as an
+     * enum whose name — or whose written-out value — is the format: JPG, PNG, GIF, WEBP, MP4. An animated
+     * image whose attachment type only said IMAGE is a GIF by its maps.
+     */
+    private static boolean imageIsGif(Object image) {
+        try {
+            for (Field field : image.getClass().getDeclaredFields()) {
+                if (!IMAGE_MAP.equals(field.getType().getName())) continue;
+                field.setAccessible(true);
+                Object map = field.get(image);
+                if (map == null) continue;
+                for (Field part : map.getClass().getDeclaredFields()) {
+                    if (!part.getType().isEnum()) continue;
+                    part.setAccessible(true);
+                    Object format = part.get(map);
+                    if (format == null) continue;
+                    if ("GIF".equalsIgnoreCase(((Enum<?>) format).name())) return true;
+                    for (Field written : format.getClass().getDeclaredFields()) {
+                        if (written.getType() != String.class) continue;
+                        written.setAccessible(true);
+                        Object value = written.get(format);
+                        if (value instanceof String && "gif".equalsIgnoreCase((String) value)) return true;
+                    }
+                }
+            }
+        } catch (Throwable unreadable) {
+            // The attachment's declared type still classifies the photo.
+        }
+        return false;
+    }
+
+    /**
      * The vault's full scan of [message]. Where {@link #foundForVault} stops at an attachment's own typed data,
      * this also reads the message's media resources — the handles Messenger's thread view itself resolves a
      * photo, video or voice clip from, encrypted chats included — and the attachment's extra string map, and it
@@ -211,7 +299,9 @@ final class MessageLogAttachment {
                 for (Object item : (List<?>) held) {
                     if (item == null || !ATTACHMENT.equals(item.getClass().getName())) continue;
                     attachments++;
-                    if (only(item, EPHEMERAL_DATA) != null) {
+                    String typeName = attachmentTypeName(item);
+                    String typeShape = typeName == null ? null : shapeForTypeName(typeName);
+                    if (EPHEMERAL.equals(typeShape) || only(item, EPHEMERAL_DATA) != null) {
                         ephemeralSeen = true;
                         continue;
                     }
@@ -219,9 +309,16 @@ final class MessageLogAttachment {
                     Object video = only(item, VIDEO_DATA);
                     Object image = only(item, IMAGE_DATA);
                     if (shape == null) {
-                        if (audio != null) shape = AUDIO;
+                        // The attachment's declared type speaks first: it classifies a sticker, a GIF and a
+                        // voice clip whose data objects the message never filled. The data objects classify
+                        // what declares no type.
+                        if (typeShape != null) shape = typeShape;
+                        else if (audio != null) shape = AUDIO;
                         else if (video != null) shape = VIDEO;
                         else if (image != null) shape = PHOTO;
+                        if ((PHOTO.equals(shape) || STICKER.equals(shape)) && image != null && imageIsGif(image)) {
+                            shape = GIF;
+                        }
                     }
                     java.util.Set<String> imageForms = new java.util.TreeSet<>();
                     int[] imageNulls = {0};
@@ -229,6 +326,7 @@ final class MessageLogAttachment {
                         : imageCandidates(image, imageForms, imageNulls);
                     if (attachments == 1) {
                         diag.append("att=1");
+                        if (typeName != null) diag.append(" typ=").append(typeName);
                         if (image != null) {
                             diag.append(" img=1 maps=").append(mapSizes(image));
                             diag.append(" asch=").append(imageForms.isEmpty() ? "-"
@@ -269,6 +367,125 @@ final class MessageLogAttachment {
             Settings.hookFailedPrivately(Vault72h.KEY, "Can't scan a message's media for the vault", unreadable);
             return new VaultRead(null, null, false, diag.toString());
         }
+    }
+
+    /** What a resolved-media hand-off yielded: the media worth fetching, and the schemes of every address seen. */
+    static final class Resolved {
+        final Found found;
+        final String diag;
+
+        Resolved(Found found, String diag) {
+            this.found = found;
+            this.diag = diag;
+        }
+    }
+
+    /**
+     * The media in what Messenger's own resolver produced for a message — the photo data, video data or audio
+     * data the thread view asked for in order to show the message. A message's own objects carry references
+     * whose form only Messenger's parser accepts; the resolver's output carries plain addresses instead: the
+     * Uris on the data object, on its nested address holders, and on the media resource it wraps. Those
+     * addresses are the ones Messenger itself was about to load for this message, so the vault takes the forms
+     * it can open — a file already on the phone first, then https, then http — and names every scheme it saw
+     * in the fingerprint, so a form it cannot open is identified by its scheme rather than guessed at. A
+     * resource that declares itself view-once is never read.
+     */
+    static Resolved resolved(String kindTag, Object data) {
+        String kind = VIDEO.equals(kindTag) ? VIDEO : AUDIO.equals(kindTag) ? AUDIO : PHOTO;
+        if (data == null) return new Resolved(null, "");
+        java.util.LinkedHashSet<String> addresses = new java.util.LinkedHashSet<>();
+        java.util.TreeSet<String> schemes = new java.util.TreeSet<>();
+        try {
+            if (data instanceof List) {
+                for (Object item : (List<?>) data) collectResolved(item, addresses, schemes);
+            } else {
+                collectResolved(data, addresses, schemes);
+            }
+        } catch (Throwable unreadable) {
+            Settings.hookFailedPrivately(Vault72h.KEY, "Can't read a message's resolved media", unreadable);
+        }
+        String diag = "rsch=" + (schemes.isEmpty() ? "-" : String.join("+", schemes));
+        if (addresses.isEmpty()) return new Resolved(null, diag);
+        List<String> ordered = new ArrayList<>(addresses);
+        ordered.sort(java.util.Comparator.comparingInt(MessageLogAttachment::resolvedRank));
+        return new Resolved(new Found(ordered.toArray(new String[0]), kind), diag);
+    }
+
+    /** Resolved addresses open local files first, then encrypted web, then plain web — the order they can fail in. */
+    private static int resolvedRank(String address) {
+        if (address.startsWith("http://")) return 2;
+        String form = addressForm(address);
+        if ("file".equals(form) || "content".equals(form) || "path".equals(form)) return 0;
+        if ("https".equals(form)) return 1;
+        return 3;
+    }
+
+    /** Every openable address on one resolved data object, and the scheme of every address seen on it. */
+    private static void collectResolved(Object item, java.util.Set<String> addresses,
+                                        java.util.Set<String> schemes) throws Exception {
+        if (item == null) return;
+        for (Field field : item.getClass().getDeclaredFields()) {
+            field.setAccessible(true);
+            Object value = field.get(item);
+            if (value == null) continue;
+            if (URI.equals(field.getType().getName())) {
+                addResolved(value.toString(), addresses, schemes);
+            } else if ("com.facebook.messaging.attachments.ImageAttachmentUris".equals(field.getType().getName())) {
+                for (Field part : value.getClass().getDeclaredFields()) {
+                    part.setAccessible(true);
+                    Object held = part.get(value);
+                    if (held != null && URI.equals(part.getType().getName())) {
+                        addResolved(held.toString(), addresses, schemes);
+                    }
+                }
+            } else if (MEDIA_RESOURCE.equals(field.getType().getName())) {
+                collectResolvedResource(value, addresses, schemes);
+            }
+        }
+    }
+
+    /** A resolved data object's media resource, read as the vault reads a message's resources — minus view-once. */
+    private static void collectResolvedResource(Object resource, java.util.Set<String> addresses,
+                                                  java.util.Set<String> schemes) throws Exception {
+        for (Field part : resource.getClass().getDeclaredFields()) {
+            part.setAccessible(true);
+            Object value = part.get(resource);
+            if (value == null) continue;
+            if (part.getType().isEnum() && ((Enum<?>) value).name().contains("EPHEMERAL")) return;
+        }
+        for (Field part : resource.getClass().getDeclaredFields()) {
+            part.setAccessible(true);
+            Object value = part.get(resource);
+            if (value != null && URI.equals(part.getType().getName())) {
+                addResolved(value.toString(), addresses, schemes);
+            }
+        }
+    }
+
+    /** Takes an address the vault can open and names the scheme of every address, openable or not. */
+    private static void addResolved(String address, java.util.Set<String> addresses, java.util.Set<String> schemes) {
+        if (address == null || address.isEmpty()) return;
+        schemes.add(schemeName(address));
+        String form = addressForm(address);
+        if ("https".equals(form) || "file".equals(form) || "content".equals(form) || "path".equals(form)
+            || address.startsWith("http://")) {
+            addresses.add(address);
+        }
+    }
+
+    /**
+     * An address's scheme as a bare protocol label — "https", "fbid", "path" for a bare file path, "relative"
+     * for a reference with no scheme of its own. A scheme names how an address would be opened, never where it
+     * points, so it is safe to keep in a fingerprint.
+     */
+    private static String schemeName(String address) {
+        if (address.startsWith("/")) return "path";
+        int colon = address.indexOf(':');
+        if (colon > 0 && colon <= 30) {
+            String scheme = address.substring(0, colon);
+            if (scheme.matches("[a-zA-Z][a-zA-Z0-9+.-]*")) return scheme.toLowerCase(java.util.Locale.ROOT);
+        }
+        return "relative";
     }
 
     /**

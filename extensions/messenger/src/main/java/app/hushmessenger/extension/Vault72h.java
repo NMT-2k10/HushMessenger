@@ -77,6 +77,8 @@ public final class Vault72h {
     static final long ROW_ARRIVAL_WINDOW_MS = 10L * 60 * 1000;
     /** Two captures of one message with no id to join them pair up within this long, like the message log's. */
     static final long LOOSE_MERGE_WINDOW_MS = 2L * 60 * 1000;
+    /** How far apart two captures' send times may be and still be the same message under two different ids. */
+    static final long SAME_MESSAGE_WINDOW_MS = 90L * 1000;
     static final long PURGE_PERIOD_MS = 60L * 60 * 1000;
     static final long PURGE_DELAY_MS = 30_000;
     static final int MAX_TEXT_CHARS = MessageLog.MAX_TEXT_CHARS;
@@ -88,6 +90,7 @@ public final class Vault72h {
 
     // Kinds an entry can be. TEXT is a message with words of its own.
     static final String KIND_TEXT = "TEXT";
+    static final String KIND_EMOJI = "EMOJI";
     static final String KIND_PHOTO = "PHOTO";
     static final String KIND_VIDEO = "VIDEO";
     static final String KIND_AUDIO = "AUDIO";
@@ -568,6 +571,12 @@ public final class Vault72h {
         String kind = kindOf(words, found, attachment);
         String shaped = kindForShape(shapeKind);
         if (shaped != null && (KIND_TEXT.equals(kind) || KIND_ATTACHMENT.equals(kind))) kind = shaped;
+        // A sticker or a GIF arrives shaped like a photo — its data is a photo's data — so the scan's declared
+        // shape refines a photo kind into the kind the attachment actually is.
+        if (shaped != null && KIND_PHOTO.equals(kind)
+            && (KIND_STICKER.equals(shaped) || KIND_GIF.equals(shaped))) kind = shaped;
+        // A message that is only emoji is filed as one, so the vault's kinds say what the message is.
+        if (KIND_TEXT.equals(kind) && isEmojiOnly(words)) kind = KIND_EMOJI;
         // The notification hook hands over no names; the message log reads them off the notification that
         // showed the message, and so does the vault, the same way, without touching the log's own copies.
         String keptSender = sender == null ? "" : sender;
@@ -691,7 +700,32 @@ public final class Vault72h {
         if (MessageLogAttachment.AUDIO.equals(shapeKind)) return KIND_AUDIO;
         if (MessageLogAttachment.VIDEO.equals(shapeKind)) return KIND_VIDEO;
         if (MessageLogAttachment.PHOTO.equals(shapeKind)) return KIND_PHOTO;
+        if (MessageLogAttachment.STICKER.equals(shapeKind)) return KIND_STICKER;
+        if (MessageLogAttachment.GIF.equals(shapeKind)) return KIND_GIF;
+        if (MessageLogAttachment.FILE.equals(shapeKind)) return KIND_FILE;
         return null;
+    }
+
+    /**
+     * Whether [words] is nothing but emoji — pictographs, their skin tones and joiners, and whitespace. A
+     * message of words with an emoji in it is a text message; a message that IS an emoji is filed as one.
+     */
+    static boolean isEmojiOnly(String words) {
+        if (words == null || words.isEmpty() || words.length() > 64) return false;
+        boolean any = false;
+        for (int i = 0; i < words.length();) {
+            int cp = words.codePointAt(i);
+            i += Character.charCount(cp);
+            if (cp == 0x200D || cp == 0xFE0F || cp == 0x20E3 || Character.isWhitespace(cp)) continue;
+            if ((cp >= 0x1F000 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x27BF)
+                || (cp >= 0x2B00 && cp <= 0x2BFF) || cp == 0x203C || cp == 0x2049
+                || cp == 0x00A9 || cp == 0x00AE || cp == 0x2122 || cp == 0x2139) {
+                any = true;
+                continue;
+            }
+            return false;
+        }
+        return any;
     }
 
     /**
@@ -737,7 +771,9 @@ public final class Vault72h {
                     status = row.getString(3);
                     oldDiag = row.getString(4);
                 } finally { row.close(); }
-                if (diag != null && !diag.isEmpty() && (oldDiag == null || oldDiag.isEmpty())) {
+                // A later surface's fingerprint replaces the arrival one: what the thread view's resolution
+                // saw is strictly more informative than what the notification-time message carried.
+                if (diag != null && !diag.isEmpty() && !diag.equals(oldDiag)) {
                     ContentValues values = new ContentValues();
                     values.put("diag", diag);
                     db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
@@ -791,26 +827,49 @@ public final class Vault72h {
                                             MessageLogAttachment.Found found, boolean attachment,
                                             String diag, boolean mediaShaped) throws Exception {
         long existing = -1;
+        boolean keepExistingId = false;
         Cursor byDedup = db.query("entries", new String[] {"row_id"}, "dedup=?", new String[] {dedup}, null, null, null, "1");
         try { if (byDedup.moveToFirst()) existing = byDedup.getLong(0); } finally { byDedup.close(); }
-        if (existing < 0 && KIND_TEXT.equals(kind) && !words.isEmpty()) {
-            Cursor loose = db.query("entries", new String[] {"row_id", "body", "thread", "dedup"},
-                "kind=? AND received_at>=? AND expires_at>?",
-                new String[] {KIND_TEXT, String.valueOf(now - LOOSE_MERGE_WINDOW_MS), String.valueOf(now)},
+        if (existing < 0 && (KIND_TEXT.equals(kind) || KIND_EMOJI.equals(kind)) && !words.isEmpty()) {
+            Cursor loose = db.query("entries", new String[] {"row_id", "body", "thread", "dedup", "sent_at",
+                    "sender_id", "kind", "source"},
+                "kind IN (?,?) AND received_at>=? AND expires_at>?",
+                new String[] {KIND_TEXT, KIND_EMOJI, String.valueOf(now - LOOSE_MERGE_WINDOW_MS),
+                    String.valueOf(now)},
                 null, null, "received_at DESC");
             try {
                 long match = -1;
+                boolean matchKeepsId = false;
                 while (loose.moveToNext()) {
                     if (!words.equals(openText(loose.getBlob(1)))) continue;
                     String otherThread = loose.getString(2);
                     if (otherThread == null) otherThread = "";
                     if (!thread.isEmpty() && !otherThread.isEmpty() && !thread.equals(otherThread)) continue;
                     String otherDedup = loose.getString(3);
-                    if (strongId && otherDedup != null && otherDedup.startsWith("m:")) continue;
+                    boolean otherStrong = otherDedup != null && otherDedup.startsWith("m:");
+                    boolean keepsId = false;
+                    if (strongId && otherStrong && !otherDedup.equals(dedup)) {
+                        // Two surfaces named the same message by different ids — the shape of an encrypted
+                        // chat, whose notification and whose chat row spell one message's id differently.
+                        // Two ids from the SAME surface are two messages (each surface's ids are its own
+                        // authority), so the merge is cross-surface only; and the same words alone don't
+                        // prove sameness (a reaction sent twice is two messages), so the send times must
+                        // also agree closely and the senders must not disagree. When they do agree, the
+                        // entry keeps the first id it was filed under.
+                        String otherSource = loose.getString(7);
+                        if (otherSource != null && otherSource.equals(source)) continue;
+                        long otherSentAt = loose.getLong(4);
+                        long otherSender = loose.getLong(5);
+                        if (Math.abs(sentAt - otherSentAt) > SAME_MESSAGE_WINDOW_MS) continue;
+                        if (otherSender != 0 && senderId != 0 && otherSender != senderId) continue;
+                        keepsId = true;
+                    }
                     if (match >= 0) { match = -1; break; }
                     match = loose.getLong(0);
+                    matchKeepsId = keepsId;
                 }
                 existing = match;
+                keepExistingId = matchKeepsId && match >= 0;
             } finally { loose.close(); }
         }
         if (existing < 0) {
@@ -843,7 +902,7 @@ public final class Vault72h {
             String oldWords = openText(row.getBlob(0));
             String status = row.getString(2);
             ContentValues values = new ContentValues();
-            if (strongId && !msgId.isEmpty() && !dedup.equals(row.getString(9))) {
+            if (strongId && !keepExistingId && !msgId.isEmpty() && !dedup.equals(row.getString(9))) {
                 // A later capture brought the message's own id to an entry a weaker key started: the entry
                 // takes the id, so a recall naming it finds this entry. No other entry can hold that key —
                 // the dedup lookup above would have matched it instead.
@@ -857,8 +916,16 @@ public final class Vault72h {
             } else if (!words.isEmpty() && oldWords.isEmpty()) {
                 values.put("body", sealText(words));
             }
-            if (row.getBlob(3) == null && sender != null && !sender.isEmpty()) values.put("sender", sealText(sender));
-            if (row.getBlob(4) == null && chat != null && !chat.isEmpty()) values.put("chat", sealText(chat));
+            // A name is filled whenever the entry has none yet — an entry written before its notification
+            // could be read holds an empty sealed name, not a missing one, and an empty name is still none.
+            String oldSender = openText(row.getBlob(3));
+            if ((oldSender == null || oldSender.isEmpty()) && sender != null && !sender.isEmpty()) {
+                values.put("sender", sealText(sender));
+            }
+            String oldChat = openText(row.getBlob(4));
+            if ((oldChat == null || oldChat.isEmpty()) && chat != null && !chat.isEmpty()) {
+                values.put("chat", sealText(chat));
+            }
             if ((row.getString(5) == null || row.getString(5).isEmpty()) && !thread.isEmpty()) values.put("thread", thread);
             String oldKind = row.getString(6);
             if ((KIND_TEXT.equals(oldKind) || KIND_ATTACHMENT.equals(oldKind))

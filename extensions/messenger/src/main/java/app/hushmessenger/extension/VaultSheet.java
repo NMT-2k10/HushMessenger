@@ -198,7 +198,11 @@ final class VaultSheet {
             return;
         }
         if (entries == null || entries.isEmpty()) {
-            page.ui.add(list, page.ui.text(page.text.get("vault_empty"), 14, page.ui.muted, false), 12);
+            // An empty category is not an empty vault: with entries kept, the words say this part holds
+            // nothing, so a filter with no matches never reads as if nothing was archived at all.
+            page.ui.add(list, page.ui.text(
+                page.text.get(stats.entries > 0 ? "vault_empty_category" : "vault_empty"),
+                14, page.ui.muted, false), 12);
             return;
         }
         int limit = Math.min(keepShown, entries.size());
@@ -269,6 +273,7 @@ final class VaultSheet {
         if (Vault72h.KIND_STICKER.equals(kind)) return page.text.get("vault_sticker");
         if (Vault72h.KIND_GIF.equals(kind)) return page.text.get("vault_gif");
         if (Vault72h.KIND_FILE.equals(kind)) return page.text.get("vault_file");
+        if (Vault72h.KIND_EMOJI.equals(kind)) return page.text.get("vault_emoji");
         if (Vault72h.KIND_ATTACHMENT.equals(kind)) return page.text.get("vault_attachment");
         return page.text.get("vault_text");
     }

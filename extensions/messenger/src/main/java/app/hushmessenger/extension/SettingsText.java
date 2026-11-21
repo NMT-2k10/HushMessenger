@@ -679,6 +679,8 @@ final class SettingsText {
         ENGLISH.put("vault_cleared", "Vault cleared");
         ENGLISH.put("vault_clear_failed", "Couldn't clear the Vault");
         ENGLISH.put("vault_empty", "Nothing is in the Vault yet. New messages appear here as they arrive.");
+        ENGLISH.put("vault_empty_category", "Nothing in this part of the Vault. Switch tabs or clear the search to see everything kept.");
+        ENGLISH.put("vault_emoji", "Emoji");
         ENGLISH.put("vault_search_hint", "Search messages, people and chats");
         ENGLISH.put("vault_filter_all", "All messages");
         ENGLISH.put("vault_filter_recalled", "Recalled");

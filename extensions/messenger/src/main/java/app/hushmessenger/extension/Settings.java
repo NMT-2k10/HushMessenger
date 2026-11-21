@@ -1421,6 +1421,33 @@ public final class Settings {
         }
     }
 
+    /**
+     * The media bridge hook's second hand-off: what Messenger's resolver itself produced for a message — the
+     * photo data, video data or audio data the thread view is about to show — handed over at the moment the
+     * resolution returns it, with the message's own id. A message's own objects carry references in forms
+     * only Messenger's parser accepts; the resolver's output carries the plain addresses Messenger was about
+     * to load, and those are what the vault attaches to the entry the message's arrival archived. View-once
+     * never reaches here: the bridge only sits on the regular media resolutions, and the vault's own scan
+     * refuses a view-once resource in what it is handed.
+     */
+    public static void vaultResolvedPhotos(String id, Object data) { vaultResolvedData("photo", id, data); }
+
+    /** {@link #vaultResolvedPhotos} for a message's video data. */
+    public static void vaultResolvedVideo(String id, Object data) { vaultResolvedData("video", id, data); }
+
+    /** {@link #vaultResolvedPhotos} for a message's audio data. */
+    public static void vaultResolvedAudio(String id, Object data) { vaultResolvedData("audio", id, data); }
+
+    private static void vaultResolvedData(String kind, String id, Object data) {
+        if (id == null || id.isEmpty() || data == null || !wouldUse(Vault72h.KEY)) return;
+        try {
+            MessageLogAttachment.Resolved resolved = MessageLogAttachment.resolved(kind, data);
+            Vault72h.attachFound(id, resolved.found, resolved.diag);
+        } catch (Throwable failure) {
+            hookFailedPrivately(Vault72h.KEY, "Can't take a message's resolved media for the vault", failure);
+        }
+    }
+
     /** The same notification hook asks this for an auto reply: on, not paused, and with at least one reply written. */
     public static boolean autoReplyWanted() { return AutoReply.wanted(); }
 
