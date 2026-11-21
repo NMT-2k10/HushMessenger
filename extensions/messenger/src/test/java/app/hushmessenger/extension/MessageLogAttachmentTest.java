@@ -354,6 +354,51 @@ public class MessageLogAttachmentTest {
         assertEquals(nameOf(MessageLogAttachment.AUDIO), marked.media);
     }
 
+    /** The vault reads the same message its own way: the biggest photo address across both of its maps. */
+    @Test public void theVaultFindsTheLargestPhotoAddress() {
+        MessageLogAttachment.Found found = MessageLogAttachment.foundForVault(photoMessage());
+        assertNotNull(found);
+        assertEquals(MessageLogAttachment.PHOTO, found.kind);
+        assertEquals(BIG, found.address());
+    }
+
+    /** The vault's read doesn't ride on the log's switches: with every one of them off it still finds the media. */
+    @Test public void theVaultReadIgnoresTheLogsSwitches() {
+        Settings.preferences.edit().putBoolean(MessageLog.KEEP_PHOTOS, false)
+            .putBoolean(MessageLog.KEEP_VIDEOS, false).putBoolean(MessageLog.KEEP_VOICE, false).commit();
+        assertNull(MessageLogAttachment.found(photoMessage()));
+        assertNotNull(MessageLogAttachment.foundForVault(photoMessage()));
+        assertNotNull(MessageLogAttachment.foundForVault(voiceMessage()));
+        MessageLogAttachment.Found video = MessageLogAttachment.foundForVault(videoMessage());
+        assertNotNull(video);
+        assertEquals(MessageLogAttachment.VIDEO, video.kind);
+        assertEquals(2, video.addresses.length);
+    }
+
+    /**
+     * A photo whose maps are there but hold no address — the shape a message can arrive in before Messenger
+     * fills its sizes in — gives the vault nothing, and says nothing back: the caller records that as its own
+     * visible state rather than as a photo that silently has no file.
+     */
+    @Test public void theVaultFindsNothingWhenThePhotoMapsAreEmpty() {
+        Message message = Message.with(Attachment.image(ImageData.of(
+            AttachmentImageMap.of(), AttachmentImageMap.of())));
+        assertNull(MessageLogAttachment.foundForVault(message));
+        Message noMaps = Message.with(Attachment.image(ImageData.of(null, null)));
+        assertNull(MessageLogAttachment.foundForVault(noMaps));
+    }
+
+    /** A view-once attachment is never the vault's, even though it carries a thumbnail's sizes like a photo. */
+    @Test public void theVaultNeverTakesAViewOnceAttachment() {
+        Message message = Message.with(Attachment.ephemeral(ImageData.of(
+            AttachmentImageMap.of(new ImageUrl(240, 180, SMALL)),
+            AttachmentImageMap.of(new ImageUrl(1440, 1920, BIG)))));
+        MessageLogAttachment.Found found = MessageLogAttachment.foundForVault(message);
+        assertNotNull(found);
+        assertEquals(MessageLogAttachment.EPHEMERAL, found.kind);
+        assertEquals(0, found.addresses.length);
+    }
+
     /** Clear takes the files with the messages, and Undo puts both back. */
     @Test public void clearAndUndoTakeTheClipAlong() throws Exception {
         MessageLog.storeNow(null, THREAD, ID);

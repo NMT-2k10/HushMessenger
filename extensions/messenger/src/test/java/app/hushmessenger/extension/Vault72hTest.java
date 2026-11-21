@@ -1,9 +1,12 @@
 package app.hushmessenger.extension;
 
+import android.app.Dialog;
 import android.content.Context;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.Switch;
+import android.widget.TextView;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.InputStream;
@@ -110,6 +113,43 @@ public class Vault72hTest {
         assertEquals(T0 + Vault72h.TTL_MS, entries.get(0).expiresAt);
     }
 
+    /**
+     * The two surfaces don't always hold the same key for one message: the notification capture has the
+     * message's own id, a chat row may have only its threading id. The words still have to land on one entry.
+     */
+    @Test public void aRowKeyedOnlyByThreadingIdMergesWithTheNotificationCapture() {
+        Vault72h.recordNow("mmb", "thread-1", "m-real", Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "An", "", T0);
+        long rowId = Vault72h.recordRowNow("mmb", "", "tid-9", T0 - 500, 7, 0, 0, T0 + 30_000);
+        assertTrue(rowId > 0);
+        List<Vault72h.Entry> entries = all(T0 + 30_000);
+        assertEquals(1, entries.size());
+        assertEquals("An", entries.get(0).sender);
+        assertEquals("m-real", entries.get(0).msgId);
+    }
+
+    /**
+     * The same agreement the other way round: the row writes first, with no name and a threading key, and the
+     * notification capture that follows has to find that entry, give it the sender's name and the message's
+     * own id — the id a recall will name.
+     */
+    @Test public void aNotificationCaptureUpgradesARowEntrysKeyAndName() {
+        assertTrue(Vault72h.recordRowNow("mmb", "", "tid-9", T0, 7, 0, 0, T0) > 0);
+        Vault72h.recordNow("mmb", "thread-1", "m-real", Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "An", "", T0 + 20_000);
+        List<Vault72h.Entry> entries = all(T0 + 20_000);
+        assertEquals(1, entries.size());
+        assertEquals("An", entries.get(0).sender);
+        assertEquals("m-real", entries.get(0).msgId);
+        assertTrue(Vault72h.markRecalledNow("m-real"));
+        assertTrue(all(T0 + 20_000).get(0).recalled());
+    }
+
+    /** Two different messages that happen to share their words are two entries: each carries its own id. */
+    @Test public void twoDifferentMessagesWithTheSameWordsStayTwoEntries() {
+        capture("ok", "thread-1", "mA", T0);
+        capture("ok", "thread-1", "mB", T0 + 5_000);
+        assertEquals(2, all(T0 + 5_000).size());
+    }
+
     @Test public void anIdlessCaptureMergesWithTheSameWordsInTheSameChat() {
         capture("trùng lặp", "thread-9", "", T0);
         capture("trùng lặp", "thread-9", "", T0 + 30_000);
@@ -213,7 +253,7 @@ public class Vault72hTest {
             found, 0, 0, "", "", T0) > 0);
         List<Vault72h.Entry> entries = all(T0);
         assertEquals(1, entries.size());
-        assertEquals(Vault72h.MEDIA_NONE, entries.get(0).mediaStatus);
+        assertEquals(Vault72h.MEDIA_NOT_KEPT, entries.get(0).mediaStatus);
     }
 
     @Test public void aFailedFetchKeepsTheEntryAndSaysSo() throws Exception {
@@ -335,6 +375,53 @@ public class Vault72hTest {
                     keepSwitch, wrapper.findViewWithTag(keep));
             }
         }
+    }
+
+    /**
+     * A media-shaped message whose address never arrived — the shape a photo takes when the message the hook
+     * read carried no filled-in sizes — is an attachment entry that says it has no downloadable copy, not a
+     * plain entry with nothing where the file should be.
+     */
+    @Test public void anAttachmentThatArrivesWithNoAddressSaysSo() {
+        assertTrue(Vault72h.recordNow(null, "thread-1", "m20", Vault72h.SOURCE_NOTIFICATION,
+            null, 0, 0, "", "", T0) > 0);
+        List<Vault72h.Entry> entries = all(T0);
+        assertEquals(1, entries.size());
+        assertEquals(Vault72h.KIND_ATTACHMENT, entries.get(0).kind);
+        assertEquals(Vault72h.MEDIA_NO_ADDRESS, entries.get(0).mediaStatus);
+        assertFalse(entries.get(0).hasMedia());
+    }
+
+    /** The vault's own screen shows that reason on the entry, in words. */
+    @Test public void theVaultSheetShowsWhyAnAttachmentHasNoFile() throws Exception {
+        long now = System.currentTimeMillis();
+        Vault72h.recordNow(null, "thread-1", "m21", Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", now);
+        try (var screen = org.robolectric.Robolectric.buildActivity(SettingsActivity.class).setup()) {
+            new VaultSheet(screen.get()).showVault();
+            Dialog dialog = org.robolectric.shadows.ShadowDialog.getLatestDialog();
+            assertNotNull(dialog);
+            View root = dialog.getWindow().getDecorView();
+            // The sheet reads the vault on its own thread and renders back on the main one.
+            boolean shown = false;
+            for (int i = 0; i < 100 && !shown; i++) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper();
+                shown = hasText(root, "No downloadable copy came with the message");
+                if (!shown) Thread.sleep(50);
+            }
+            assertTrue("the entry says no downloadable copy came with the message", shown);
+            dialog.dismiss();
+        }
+    }
+
+    private static boolean hasText(View view, String wanted) {
+        if (view instanceof TextView && wanted.equals(String.valueOf(((TextView) view).getText()))) return true;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                if (hasText(group.getChildAt(i), wanted)) return true;
+            }
+        }
+        return false;
     }
 
     /** Waits for the media thread to settle an entry's media status, and returns that entry. */
