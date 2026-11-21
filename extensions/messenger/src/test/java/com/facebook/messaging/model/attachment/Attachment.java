@@ -8,6 +8,7 @@ public final class Attachment {
     public int A00;
     public long A01;
     public AudioData A05;
+    public EphemeralMediaData A06;
     public ImageData A07;
     public VideoData A08;
     public String A0C;
@@ -17,6 +18,15 @@ public final class Attachment {
     public static Attachment audio(AudioData audio) {
         Attachment attachment = new Attachment();
         attachment.A05 = audio;
+        attachment.A0L = "attachment-id";
+        return attachment;
+    }
+
+    /** A view-once photo: the picture's sizes are there for a thumbnail, and the ephemeral data says what it is. */
+    public static Attachment ephemeral(ImageData image) {
+        Attachment attachment = new Attachment();
+        attachment.A06 = new EphemeralMediaData();
+        attachment.A07 = image;
         attachment.A0L = "attachment-id";
         return attachment;
     }
