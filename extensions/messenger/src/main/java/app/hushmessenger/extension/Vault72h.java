@@ -654,6 +654,14 @@ public final class Vault72h {
         } finally { row.close(); }
     }
 
+    private static boolean entryExistsLocked(SQLiteDatabase db, long rowId) {
+        Cursor row = db.query("entries", new String[] {"row_id"}, "row_id=?",
+            new String[] {String.valueOf(rowId)}, null, null, null, "1");
+        try {
+            return row.moveToFirst();
+        } finally { row.close(); }
+    }
+
     private static String mediaStatusLocked(SQLiteDatabase db, long rowId) {
         Cursor row = db.query("entries", new String[] {"media_status"}, "row_id=?",
             new String[] {String.valueOf(rowId)}, null, null, null, "1");
@@ -717,6 +725,12 @@ public final class Vault72h {
                         target.delete();
                         setMediaStatus(context, rowId, MEDIA_UNAVAILABLE, "", found.kind, 0);
                         return;
+                    }
+                    // The entry may have been wiped (Clear Vault) or purged while this fetch was in
+                    // flight; a sealed file for a gone entry would outlive the wipe as an orphan, so
+                    // drop it instead of reporting it stored.
+                    synchronized (LOCK) {
+                        if (!entryExistsLocked(db(context), rowId)) { target.delete(); return; }
                     }
                     setMediaStatus(context, rowId, MEDIA_STORED, name, found.kind, target.length());
                 } catch (Throwable failure) {
