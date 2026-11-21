@@ -947,6 +947,8 @@ vault_clear	ล้างห้องนิรภัย
 vault_cleared	ล้างห้องนิรภัยแล้ว
 vault_clear_failed	ไม่สามารถล้างห้องนิรภัยได้
 vault_empty	ยังไม่มีอะไรในห้องนิรภัย ข้อความใหม่จะปรากฏที่นี่เมื่อมาถึง
+vault_empty_category	ส่วนนี้ของห้องนิรภัยยังไม่มีอะไร สลับแท็บหรือล้างการค้นหาเพื่อดูทั้งหมดที่เก็บไว้
+vault_emoji	อิโมจิ
 vault_search_hint	ค้นหาข้อความ ผู้คน และแชท
 vault_filter_all	ข้อความทั้งหมด
 vault_filter_recalled	ถูกเรียกคืน

@@ -947,6 +947,8 @@ vault_clear	Vaciar la bóveda
 vault_cleared	Bóveda vaciada
 vault_clear_failed	No se pudo vaciar la bóveda
 vault_empty	Todavía no hay nada en la bóveda. Los mensajes nuevos aparecen aquí cuando llegan.
+vault_empty_category	No hay nada en esta parte de la bóveda. Cambia de pestaña o borra la búsqueda para ver todo lo guardado.
+vault_emoji	Emoji
 vault_search_hint	Buscar mensajes, personas y chats
 vault_filter_all	Todos los mensajes
 vault_filter_recalled	Anulados

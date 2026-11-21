@@ -947,6 +947,8 @@ vault_clear	Xóa toàn bộ Kho
 vault_cleared	Đã xóa Kho
 vault_clear_failed	Không xóa được Kho
 vault_empty	Kho hiện đang trống. Tin nhắn mới sẽ xuất hiện ở đây ngay khi đến.
+vault_empty_category	Mục này chưa có gì trong Kho. Chuyển tab hoặc xóa tìm kiếm để xem tất cả nội dung đã lưu.
+vault_emoji	Biểu tượng cảm xúc
 vault_search_hint	Tìm tin nhắn, người và cuộc trò chuyện
 vault_filter_all	Tất cả tin nhắn
 vault_filter_recalled	Đã thu hồi

@@ -947,6 +947,8 @@ vault_clear	Kasayı Temizle
 vault_cleared	Kasa temizlendi
 vault_clear_failed	Kasa temizlenemedi
 vault_empty	Kasada henüz bir şey yok. Yeni mesajlar geldikçe burada görünür.
+vault_empty_category	Kasanın bu bölümünde bir şey yok. Kaydedilen her şeyi görmek için sekme değiştirin veya aramayı temizleyin.
+vault_emoji	Emoji
 vault_search_hint	Mesajlarda, kişilerde ve sohbetlerde ara
 vault_filter_all	Tüm mesajlar
 vault_filter_recalled	Geri alınanlar

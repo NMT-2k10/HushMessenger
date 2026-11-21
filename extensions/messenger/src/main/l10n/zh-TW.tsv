@@ -947,6 +947,8 @@ vault_clear	清空保管庫
 vault_cleared	保管庫已清空
 vault_clear_failed	無法清空保管庫
 vault_empty	保管庫目前是空的。新訊息到達時會出現在這裡。
+vault_empty_category	保管庫的這個部分目前沒有內容。切換分頁或清除搜尋即可查看所有已保存的內容。
+vault_emoji	表情符號
 vault_search_hint	搜尋訊息、聯絡人和聊天
 vault_filter_all	所有訊息
 vault_filter_recalled	已收回
