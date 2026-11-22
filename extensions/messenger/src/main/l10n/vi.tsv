@@ -941,6 +941,8 @@ ios_bars.description	Thanh trên cùng của đoạn chat và hộp tin nhắn t
 temporary_vault.title	Kho Tạm Thời (72 giờ)
 temporary_vault.description	Lưu tin nhắn trên điện thoại này trong 72 giờ ngay khi tin đến và khi cuộc trò chuyện đang mở hiển thị tin, để bạn vẫn đọc được nếu tin bị thu hồi, rồi xóa từng bản sao khi hết 72 giờ. Tin nhắn xem một lần không bao giờ được lưu. Dữ liệu được mã hóa và chỉ nằm trên điện thoại của bạn. Ảnh, video và tin nhắn thoại chỉ được giữ khi bật các công tắc bên dưới mục này.
 vault_title	Kho Tạm Thời
+vault_capture_safe_mode	Vault đang ngừng lưu vì Chế độ an toàn đang bật.
+vault_capture_paused	Vault đang ngừng lưu vì Tạm dừng mọi thay đổi đang bật.
 vault_hint	Mọi thứ ở đây được lưu trên điện thoại này ngay khi tin đến và sẽ bị xóa sau 72 giờ. Tin nhắn xem một lần không bao giờ được lưu.
 vault_view	Mở Kho
 vault_clear	Xóa toàn bộ Kho

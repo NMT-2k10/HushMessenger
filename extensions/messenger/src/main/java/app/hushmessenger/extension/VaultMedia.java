@@ -1,5 +1,8 @@
 package app.hushmessenger.extension;
 
+import android.content.Context;
+import android.content.res.AssetFileDescriptor;
+import android.net.Uri;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -62,55 +65,99 @@ final class VaultMedia {
         return address.startsWith("file:") || address.startsWith("content://") || address.startsWith("/");
     }
 
-    /**
-     * Whether an address is a reference into Messenger's own media store. That is how an encrypted chat
-     * names a message's media: the reference itself is not a file or a web address, and the app resolves it
-     * through its content resolver when it needs the file behind the message — the same way the vault opens
-     * it here.
-     */
+    /** Whether the app must resolve a Messenger media handle before Android can open it. */
     static boolean isProvider(String address) {
         return address.startsWith("msys://");
     }
 
     static InputStream open(String address) {
+        if (isProvider(address) || address.startsWith("content://")) return providerOpener.apply(address);
         if (isLocal(address)) return openLocal(address);
-        if (isProvider(address)) return providerOpener.apply(address);
         return opener.apply(address);
     }
 
-    /** A stream over a media-store reference, read through the vault's own app's content resolver. */
+    private static final String TAM_PROVIDER =
+        "com.facebook.xapp.messaging.composer.broadcast.transportagnostic.attachment.source.TamAttachmentProvider";
+
+    /**
+     * Messenger 587's 5TF.A03 constructs both schemes from the same authority and URI builder.
+     * Keep the encoded paths and query intact, and use the registered provider in this package.
+     */
+    static Uri providerUri(String address, String ownAuthority) {
+        Uri uri = Uri.parse(address);
+        if ("content".equals(uri.getScheme())) return uri;
+        if (!"msys".equals(uri.getScheme()) || ownAuthority == null || !ownAuthority.equals(uri.getEncodedAuthority())
+            || uri.getPathSegments().size() < 2) return null;
+        return uri.buildUpon().scheme("content").build();
+    }
+
     private static InputStream openProvider(String address) {
+        return openProvider(Settings.appContext, address);
+    }
+
+    static InputStream openProvider(Context context, String address) {
+        if (context == null) return null;
+        AssetFileDescriptor asset = null;
         try {
-            android.content.Context context = Settings.appContext;
-            if (context == null) return null;
-            return context.getContentResolver().openInputStream(android.net.Uri.parse(address));
+            String authority = context.getPackageName() + ".tam-attachment";
+            Uri uri = providerUri(address, authority);
+            if (uri == null) {
+                VaultDiag.media("resolve", "unsupported_handle");
+                return null;
+            }
+            if (authority.equals(uri.getAuthority())) {
+                android.content.pm.ProviderInfo provider = context.getPackageManager().resolveContentProvider(authority, 0);
+                if (provider == null || !context.getPackageName().equals(provider.packageName)
+                    || !TAM_PROVIDER.equals(provider.name)) {
+                    VaultDiag.media("resolve", "provider_missing");
+                    return null;
+                }
+                // The stock delegate implements doOpenTypedAssetFile. openInputStream requests openAssetFile.
+                asset = context.getContentResolver().openTypedAssetFileDescriptor(uri, "*/*", null);
+                if (asset == null) {
+                    VaultDiag.media("resolve", "empty_descriptor");
+                    return null;
+                }
+                long length = asset.getLength();
+                InputStream stream = counted(asset.createInputStream(), length);
+                asset = null; // The descriptor's AutoCloseInputStream owns the ParcelFileDescriptor.
+                VaultDiag.media("resolve", "tam_stream");
+                return stream;
+            }
+            InputStream stream = context.getContentResolver().openInputStream(uri);
+            VaultDiag.media("resolve", stream == null ? "empty_stream" : "content_stream");
+            return stream;
         } catch (Exception unreadable) {
+            VaultDiag.media("resolve", "provider_error");
             return null;
+        } finally {
+            if (asset != null) {
+                try { asset.close(); } catch (IOException ignored) {}
+            }
         }
     }
 
     /** A stream over a file or content address on the phone, in the vault's own app. Null when it can't be read. */
     private static InputStream openLocal(String address) {
         try {
-            if (address.startsWith("content://")) {
-                android.content.Context context = Settings.appContext;
-                if (context == null) return null;
-                return context.getContentResolver().openInputStream(android.net.Uri.parse(address));
-            }
             if (address.startsWith("/")) {
-                return new java.io.FileInputStream(new java.io.File(address));
+                return openFile(new java.io.File(address));
             }
             try {
-                return new java.io.FileInputStream(new java.io.File(new java.net.URI(address)));
+                return openFile(new java.io.File(new java.net.URI(address)));
             } catch (Exception notAUri) {
                 String path = address.substring("file:".length());
                 while (path.startsWith("//")) path = path.substring(1);
                 if (!path.startsWith("/")) path = "/" + path;
-                return new java.io.FileInputStream(new java.io.File(path));
+                return openFile(new java.io.File(path));
             }
         } catch (Exception unreadable) {
             return null;
         }
+    }
+
+    private static InputStream openFile(java.io.File file) throws IOException {
+        return counted(new java.io.FileInputStream(file), file.length());
     }
 
     private static InputStream openRemote(String address) {
@@ -123,7 +170,9 @@ final class VaultMedia {
             // The file itself, unencoded: a transparently decompressed body would arrive longer than the
             // length its headers announced, and the counted stream below would call a whole file cut short.
             connection.setRequestProperty("Accept-Encoding", "identity");
-            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+            int status = connection.getResponseCode();
+            if (status != HttpURLConnection.HTTP_OK) {
+                VaultDiag.media("fetch", status == 401 || status == 403 || status == 410 ? "url_denied" : "http_error");
                 connection.disconnect();
                 return null;
             }

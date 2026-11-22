@@ -941,6 +941,8 @@ ios_bars.description	La barra de arriba del chat y la caja de mensajes se vuelve
 temporary_vault.title	Bóveda temporal (72 horas)
 temporary_vault.description	Guarda los mensajes en este teléfono durante 72 horas cuando llegan y cuando un chat abierto los muestra, para que puedas seguir leyéndolos si se anula su envío, y elimina cada copia cuando pasan sus 72 horas. Los mensajes de una sola visualización nunca se guardan. Está cifrado y se queda en tu teléfono. Las fotos, los vídeos y los mensajes de voz solo se guardan con los interruptores de abajo activados.
 vault_title	Bóveda temporal
+vault_capture_safe_mode	La captura de la bóveda está desactivada mientras el modo seguro está activo.
+vault_capture_paused	La captura de la bóveda está en pausa por la opción Pausar todos los cambios.
 vault_hint	Todo lo que hay aquí se guardó en este teléfono cuando llegó y se elimina 72 horas después. Los mensajes de una sola visualización nunca se guardan.
 vault_view	Abrir la bóveda
 vault_clear	Vaciar la bóveda

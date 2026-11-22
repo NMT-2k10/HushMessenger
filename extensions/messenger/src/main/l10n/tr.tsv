@@ -941,6 +941,8 @@ ios_bars.description	Sohbetin üst çubuğu ve mesaj kutusu yarı saydam olur, m
 temporary_vault.title	Geçici Kasa (72 saat)
 temporary_vault.description	Mesajları bu telefonda, geldiklerinde ve açık bir sohbet gösterdiğinde 72 saat boyunca saklar; böylece gönderim iptal edilse bile okuyabilirsiniz ve her kopya 72 saati dolduğunda silinir. Tek görüntülemelik mesajlar asla kaydedilmez. Şifrelidir ve telefonunuzda kalır. Fotoğraflar, videolar ve sesli mesajlar yalnızca altındaki anahtarlar açıkken saklanır.
 vault_title	Geçici Kasa
+vault_capture_safe_mode	Güvenli mod etkinken kasa kaydı kapalıdır.
+vault_capture_paused	Tüm değişiklikleri duraklat seçeneği kasa kaydını duraklattı.
 vault_hint	Buradaki her şey, mesaj geldiğinde bu telefona kaydedildi ve 72 saat sonra silinir. Tek görüntülemelik mesajlar asla kaydedilmez.
 vault_view	Kasayı Aç
 vault_clear	Kasayı Temizle

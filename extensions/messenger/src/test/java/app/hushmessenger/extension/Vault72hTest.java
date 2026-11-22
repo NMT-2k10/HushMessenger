@@ -10,7 +10,6 @@ import android.widget.TextView;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.InputStream;
-import java.security.SecureRandom;
 import java.util.List;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -44,6 +43,7 @@ public class Vault72hTest {
         Settings.activeAt.clear();
         Settings.hookErrors.clear();
         Vault72h.resetForTests();
+        Vault72h.clock = () -> T0;
         context.deleteDatabase(Vault72h.DB_NAME);
         deleteMedia();
         Vault72h.vault = new MessageLogTest.SoftwareVault();
@@ -300,8 +300,7 @@ public class Vault72hTest {
 
     @Test public void aPhotoIsFetchedSealedAndOpensBackToTheSameBytes() throws Exception {
         Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
-        byte[] picture = new byte[8192];
-        new SecureRandom().nextBytes(picture);
+        byte[] picture = picture(0x14bd67);
         VaultMedia.opener = address -> new ByteArrayInputStream(picture);
         MessageLogAttachment.Found found = new MessageLogAttachment.Found(
             new String[] {"https://example.test/photo.jpg"}, MessageLogAttachment.PHOTO);
@@ -359,7 +358,8 @@ public class Vault72hTest {
 
     @Test public void purgeDeletesExpiredMediaFilesWithTheirEntries() throws Exception {
         Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
-        VaultMedia.opener = address -> new ByteArrayInputStream(new byte[2048]);
+        byte[] png = picture(0x14bd67);
+        VaultMedia.opener = address -> new ByteArrayInputStream(png);
         MessageLogAttachment.Found found = new MessageLogAttachment.Found(
             new String[] {"https://example.test/p.jpg"}, MessageLogAttachment.PHOTO);
         Vault72h.recordNow(null, "thread-1", "m14", Vault72h.SOURCE_NOTIFICATION, found, 0, 0, "", "", T0);
@@ -378,7 +378,8 @@ public class Vault72hTest {
 
     @Test public void clearAllEmptiesEntriesAndMediaAtOnce() throws Exception {
         Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
-        VaultMedia.opener = address -> new ByteArrayInputStream(new byte[1024]);
+        byte[] png = picture(0x14bd67);
+        VaultMedia.opener = address -> new ByteArrayInputStream(png);
         capture("một", "thread-1", "m16", T0);
         MessageLogAttachment.Found found = new MessageLogAttachment.Found(
             new String[] {"https://example.test/p.jpg"}, MessageLogAttachment.PHOTO);
@@ -527,8 +528,7 @@ public class Vault72hTest {
         assertTrue(Vault72h.recordNow("Đã gửi một ảnh cho bạn", "thread-1", "m30",
             Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0,
             MessageLogAttachment.PHOTO, "att=1 img=1 maps=0,0") > 0);
-        byte[] picture = new byte[4096];
-        new SecureRandom().nextBytes(picture);
+        byte[] picture = picture(0x367ace);
         File local = new File(context.getCacheDir(), "resolved-photo.jpg");
         java.nio.file.Files.write(local.toPath(), picture);
         MessageLogAttachment.Found found = new MessageLogAttachment.Found(
@@ -550,8 +550,7 @@ public class Vault72hTest {
         assertTrue(Vault72h.recordNow("Đã gửi một ảnh cho bạn", "thread-1", "m33",
             Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0,
             MessageLogAttachment.PHOTO, "att=1 img=1 maps=n,4 asch=https+path") > 0);
-        byte[] picture = new byte[2048];
-        new SecureRandom().nextBytes(picture);
+        byte[] picture = picture(0x367ace);
         VaultMedia.opener = address -> address.contains("dead")
             ? null : new ByteArrayInputStream(picture);
         MessageLogAttachment.Found found = new MessageLogAttachment.Found(new String[] {
@@ -564,28 +563,103 @@ public class Vault72hTest {
         assertArrayEquals(picture, Vault72h.openMedia(context, entry));
     }
 
-    /**
-     * A resolution delivery can name its message differently from the entry the arrival archived — the
-     * surfaces spell one message's id in their own ways. With exactly one recent entry of the delivery's
-     * kind still waiting for its media, the delivery is that entry's, under the entry's own id.
-     */
-    @Test public void resolvedMediaFindsItsEntryWhenTheDeliveryNamesItDifferently() throws Exception {
+    @Test public void aSingleSameKindEntryNeverTakesAnotherMessagesMedia() {
+        assertTrue(mediaArrival("notif-spelling", "thread-1", T0) > 0);
+        assertFalse(Vault72h.attachFoundNow("thread-spelling", "thread-1", photo("other"), "", T0));
+        assertEquals(Vault72h.MEDIA_NO_ADDRESS, all(T0).get(0).mediaStatus);
+    }
+
+    @Test public void mediaBeforeInsertIsDrainedByMessageIdAndThread() throws Exception {
         Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
-        assertTrue(Vault72h.recordNow("Đã gửi một ảnh cho bạn", "thread-1", "notif-spelling",
-            Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", T0,
-            MessageLogAttachment.PHOTO, "att=1 typ=IMAGE img=1 maps=n,4 asch=msys") > 0);
-        byte[] picture = new byte[2048];
-        new SecureRandom().nextBytes(picture);
-        File local = new File(context.getCacheDir(), "resolved-photo-2.jpg");
-        java.nio.file.Files.write(local.toPath(), picture);
-        MessageLogAttachment.Found found = new MessageLogAttachment.Found(
-            new String[] {local.toURI().toString()}, MessageLogAttachment.PHOTO);
-        assertTrue(Vault72h.attachFoundNow("thread-spelling", found, "rsch=msys", T0));
+        byte[] png = picture(0x349abc);
+        VaultMedia.opener = address -> new ByteArrayInputStream(png);
+        assertFalse(Vault72h.attachFoundNow("early", "thread-1", photo("early"), "", T0));
+        assertEquals(0, all(T0).size());
+        assertTrue(mediaArrival("early", "thread-1", T0 + 2_000) > 0);
+        assertArrayEquals(png, Vault72h.openMedia(context, awaitMedia(T0 + 2_000)));
+    }
+
+    @Test public void mediaWithAnExactIdAndConflictingThreadIsRejected() {
+        assertTrue(mediaArrival("same-id", "thread-1", T0) > 0);
+        assertFalse(Vault72h.attachFoundNow("same-id", "thread-2", photo("other"), "", T0));
+        assertEquals(Vault72h.MEDIA_NO_ADDRESS, all(T0).get(0).mediaStatus);
+    }
+
+    @Test public void simultaneousDeliveriesStayWithTheirOwnMessages() throws Exception {
+        Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
+        byte[] first = picture(0x1144ee), second = picture(0xaade11);
+        VaultMedia.opener = address -> new ByteArrayInputStream(address.endsWith("first") ? first : second);
+        assertFalse(Vault72h.attachFoundNow("first", "thread-1", photo("first"), "", T0));
+        assertFalse(Vault72h.attachFoundNow("second", "thread-2", photo("second"), "", T0));
+        assertTrue(mediaArrival("second", "thread-2", T0 + 2_000) > 0);
+        assertTrue(mediaArrival("first", "thread-1", T0 + 2_000) > 0);
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        List<Vault72h.Entry> entries = all(T0 + 2_000);
+        while (entries.stream().anyMatch(entry -> Vault72h.MEDIA_PENDING.equals(entry.mediaStatus))
+            && System.nanoTime() < deadline) {
+            Thread.sleep(25);
+            entries = all(T0 + 2_000);
+        }
+        assertEquals(2, entries.size());
+        for (Vault72h.Entry entry : entries) {
+            assertTrue(entry.hasMedia());
+            assertArrayEquals(entry.msgId.equals("first") ? first : second, Vault72h.openMedia(context, entry));
+        }
+    }
+
+    @Test public void aDeferredDeliveryIsDroppedWhenItsWindowEnds() {
+        assertFalse(Vault72h.attachFoundNow("late", "thread-1", photo("late"), "", T0));
+        assertTrue(mediaArrival("late", "thread-1", T0 + 11_000) > 0);
+        assertEquals(Vault72h.MEDIA_NO_ADDRESS, all(T0 + 11_000).get(0).mediaStatus);
+    }
+
+    @Test public void restartRecoversInterruptedMediaAndPreservesRows() throws Exception {
+        long row = mediaArrival("interrupted", "thread-1", T0);
+        android.database.sqlite.SQLiteDatabase db = android.database.sqlite.SQLiteDatabase.openDatabase(
+            context.getDatabasePath(Vault72h.DB_NAME).getAbsolutePath(), null,
+            android.database.sqlite.SQLiteDatabase.OPEN_READWRITE);
+        try {
+            db.execSQL("UPDATE entries SET media_status='PENDING' WHERE row_id=?", new Object[] {row});
+        } finally {
+            db.close();
+        }
+        File dir = new File(context.getFilesDir(), Vault72h.MEDIA_DIR);
+        assertTrue(dir.isDirectory() || dir.mkdirs());
+        File unfinished = File.createTempFile("pending-", ".part", dir);
+        Vault72h.resetForTests();
+        Vault72h.Entry entry = all(T0).get(0);
+        assertEquals("interrupted", entry.msgId);
+        assertEquals(Vault72h.MEDIA_FAILED, entry.mediaStatus);
+        assertFalse(unfinished.exists());
+    }
+
+    @Test public void aTruncatedImageDoesNotBecomeStored() throws Exception {
+        Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
+        byte[] valid = picture(0x6789ab);
+        VaultMedia.opener = address -> new ByteArrayInputStream(java.util.Arrays.copyOf(valid, valid.length - 8));
+        assertTrue(mediaArrival("truncated", "thread-1", T0) > 0);
+        assertTrue(Vault72h.attachFoundNow("truncated", "thread-1", photo("truncated"), "", T0));
         Vault72h.Entry entry = awaitMedia(T0);
-        assertNotNull(entry);
-        assertEquals("notif-spelling", entry.msgId);
-        assertEquals(Vault72h.MEDIA_STORED, entry.mediaStatus);
-        assertArrayEquals(picture, Vault72h.openMedia(context, entry));
+        assertEquals(Vault72h.MEDIA_FAILED, entry.mediaStatus);
+        assertFalse(entry.hasMedia());
+    }
+
+    private long mediaArrival(String id, String thread, long now) {
+        return Vault72h.recordNow(null, thread, id, Vault72h.SOURCE_NOTIFICATION, null, 0, 0, "", "", now,
+            MessageLogAttachment.PHOTO, "");
+    }
+
+    private static MessageLogAttachment.Found photo(String path) {
+        return new MessageLogAttachment.Found("https://example.test/" + path, MessageLogAttachment.PHOTO);
+    }
+
+    private static byte[] picture(int color) throws Exception {
+        java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(3, 2,
+            java.awt.image.BufferedImage.TYPE_INT_RGB);
+        image.setRGB(0, 0, color);
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        assertTrue(javax.imageio.ImageIO.write(image, "png", out));
+        return out.toByteArray();
     }
 
     /** Two recent entries could be a differently-named delivery's either one: it is filed under neither. */

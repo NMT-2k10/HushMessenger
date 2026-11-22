@@ -125,4 +125,56 @@ public class VaultMediaTest {
             "https://cdn.example.com/photo-l.jpg?oe=6A1B2C3D",
             "https://cdn.example.com/photo-s.jpg?oe=6A1B2C3D"), VaultMedia.ordered(found));
     }
+
+    @Test public void tamHandleKeepsTheStockAuthorityAndAllEncodedParameters() {
+        String authority = "com.facebook.orca.vault72h.tam-attachment";
+        String encoded = authority + "/123/token%2Fxyz?content_type=3&is_decouple_tam=true&rl=8";
+        assertEquals("content://" + encoded, VaultMedia.providerUri("msys://" + encoded, authority).toString());
+        assertNull(VaultMedia.providerUri("msys://ae-media/222?sha256=bbb", authority));
+        assertNull(VaultMedia.providerUri("msys://foreign.tam-attachment/123/token", authority));
+        assertNull(VaultMedia.providerUri("msys://" + authority + "/123", authority));
+    }
+
+    @Test public void contentResolverReturnsAStreamNullAndAnError() throws Exception {
+        android.content.Context context = org.robolectric.RuntimeEnvironment.getApplication();
+        String authority = "vault-test-input";
+        java.io.File backing = java.io.File.createTempFile("vault-provider", ".test");
+        byte[] bytes = {9, 7, 0, 1};
+        java.nio.file.Files.write(backing.toPath(), bytes);
+        android.content.ContentProvider provider = new android.content.ContentProvider() {
+            @Override public boolean onCreate() { return true; }
+            @Override public String getType(android.net.Uri uri) { return "application/octet-stream"; }
+            @Override public android.database.Cursor query(android.net.Uri uri, String[] fields, String filter,
+                String[] args, String order) { return null; }
+            @Override public android.net.Uri insert(android.net.Uri uri, android.content.ContentValues values) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public int delete(android.net.Uri uri, String filter, String[] args) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public int update(android.net.Uri uri, android.content.ContentValues values,
+                String filter, String[] args) { throw new UnsupportedOperationException(); }
+            @Override public android.os.ParcelFileDescriptor openFile(android.net.Uri uri, String mode)
+                throws java.io.FileNotFoundException {
+                if ("/null".equals(uri.getPath())) return null;
+                if ("/error".equals(uri.getPath())) throw new java.io.FileNotFoundException();
+                return android.os.ParcelFileDescriptor.open(backing, android.os.ParcelFileDescriptor.MODE_READ_ONLY);
+            }
+        };
+        android.content.pm.ProviderInfo info = new android.content.pm.ProviderInfo();
+        info.authority = authority;
+        provider.attachInfo(context, info);
+        org.robolectric.shadows.ShadowContentResolver.registerProviderInternal(authority, provider);
+        try {
+            try (InputStream in = VaultMedia.openProvider(context, "content://" + authority + "/valid")) {
+                assertNotNull(in);
+                assertArrayEquals(bytes, in.readAllBytes());
+            }
+            assertNull(VaultMedia.openProvider(context, "content://" + authority + "/null"));
+            assertNull(VaultMedia.openProvider(context, "content://" + authority + "/error"));
+        } finally {
+            backing.delete();
+        }
+    }
+
 }

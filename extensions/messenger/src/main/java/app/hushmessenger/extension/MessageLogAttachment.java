@@ -182,9 +182,15 @@ final class MessageLogAttachment {
         final Found found;
         final String shapeKind;
         final boolean ephemeral;
+        final boolean complete;
         final String diag;
 
         VaultRead(Found found, String shapeKind, boolean ephemeral, String diag) {
+            this(found, shapeKind, ephemeral, diag, true);
+        }
+
+        VaultRead(Found found, String shapeKind, boolean ephemeral, String diag, boolean complete) {
+            this.complete = complete;
             this.found = found;
             this.shapeKind = shapeKind;
             this.ephemeral = ephemeral;
@@ -316,7 +322,7 @@ final class MessageLogAttachment {
                         else if (audio != null) shape = AUDIO;
                         else if (video != null) shape = VIDEO;
                         else if (image != null) shape = PHOTO;
-                        if ((PHOTO.equals(shape) || STICKER.equals(shape)) && image != null && imageIsGif(image)) {
+                        if (PHOTO.equals(shape) && image != null && imageIsGif(image)) {
                             shape = GIF;
                         }
                     }
@@ -343,7 +349,9 @@ final class MessageLogAttachment {
                             String[] videoAddresses = video == null ? null : addressesOnVault(video);
                             if (videoAddresses != null) found = new Found(videoAddresses, VIDEO);
                             else if (imageAddresses != null && !imageAddresses.isEmpty()) {
-                                found = new Found(imageAddresses.toArray(new String[0]), PHOTO);
+                                String imageKind = VIDEO.equals(typeShape) || GIF.equals(typeShape) || STICKER.equals(typeShape)
+                                    ? typeShape : PHOTO;
+                                found = new Found(imageAddresses.toArray(new String[0]), imageKind);
                             } else {
                                 String mapped = mappedAddress(item, shape);
                                 if (mapped != null && shape != null) found = new Found(mapped, shape);
@@ -352,20 +360,21 @@ final class MessageLogAttachment {
                     }
                 }
             }
-            if (ephemeralSeen && found == null) {
+            if (ephemeralSeen) {
                 return new VaultRead(null, null, true, diag.toString());
             }
-            if (!ephemeralSeen) {
-                Found resource = resourceMedia(message, diag);
-                if (resource != null) {
-                    if (shape == null) shape = resource.kind;
-                    if (found == null) found = resource;
-                }
+            Found resource = resourceMedia(message, diag);
+            if (resource != null && EPHEMERAL.equals(resource.kind)) {
+                return new VaultRead(null, null, true, diag.toString());
+            }
+            if (resource != null) {
+                if (shape == null) shape = resource.kind;
+                if (found == null) found = resource;
             }
             return new VaultRead(found, shape, false, diag.toString());
         } catch (Throwable unreadable) {
             Settings.hookFailedPrivately(Vault72h.KEY, "Can't scan a message's media for the vault", unreadable);
-            return new VaultRead(null, null, false, diag.toString());
+            return new VaultRead(null, null, false, diag.toString(), false);
         }
     }
 
@@ -453,7 +462,7 @@ final class MessageLogAttachment {
             part.setAccessible(true);
             Object value = part.get(resource);
             if (value == null) continue;
-            if (part.getType().isEnum() && ((Enum<?>) value).name().contains("EPHEMERAL")) return;
+            if (part.getType().isEnum() && ephemeralName(((Enum<?>) value).name())) return;
         }
         for (Field part : resource.getClass().getDeclaredFields()) {
             part.setAccessible(true);
@@ -553,6 +562,7 @@ final class MessageLogAttachment {
                     if (value == null) continue;
                     if (part.getType().isEnum()) {
                         String name = ((Enum<?>) value).name();
+                        if (ephemeralName(name)) return new Found(new String[0], EPHEMERAL);
                         if (name.contains("VIDEO")) kind = VIDEO;
                         else if (name.contains("AUDIO")) kind = AUDIO;
                         else if (name.contains("PHOTO")) kind = PHOTO;
@@ -579,6 +589,10 @@ final class MessageLogAttachment {
         }
         if (resources > 1) diag.append(" mr=").append(resources);
         return best;
+    }
+
+    private static boolean ephemeralName(String name) {
+        return name.contains("EPHEMERAL") || name.contains("VIEW_ONCE");
     }
 
     /** The scheme of an address the vault may use — a web address, or a file or content address on the phone. */

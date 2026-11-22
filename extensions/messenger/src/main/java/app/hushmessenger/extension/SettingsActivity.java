@@ -2229,6 +2229,7 @@ public final class SettingsActivity extends Activity {
         }
         boolean safeMode = CrashGuard.isSafeMode();
         boolean paused = Settings.preferences.getBoolean("paused", false);
+        vault.refreshCaptureStatus();
         safeModeAction.setVisibility(safeMode ? View.VISIBLE : View.GONE);
         safeModeAction.setText(text.get(paused ? "clear_safe_mode" : "resume"));
         if (safeMode) {

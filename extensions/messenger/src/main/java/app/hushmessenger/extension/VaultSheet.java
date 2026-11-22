@@ -43,6 +43,9 @@ final class VaultSheet {
     private int shown = PAGE;
     private long generation;
     private MediaPlayer player;
+    private File audioFile;
+    private Dialog mediaDialog;
+    private android.widget.TextView captureStatus;
 
     VaultSheet(SettingsActivity page) {
         this.page = page;
@@ -50,6 +53,9 @@ final class VaultSheet {
 
     /** Open and Clear under the vault's switch. The keep switches are added by the settings page itself. */
     void addActions(LinearLayout content) {
+        captureStatus = page.ui.text("", 13, page.ui.warning, false);
+        page.ui.add(content, captureStatus, 4);
+        refreshCaptureStatus();
         LinearLayout actions = page.ui.row();
         Button view = page.ui.button(page.text.get("vault_view"));
         view.setTag("vault_view");
@@ -64,7 +70,23 @@ final class VaultSheet {
         page.ui.add(content, actions, 8);
     }
 
+    private String captureBlockCaption() {
+        if (CrashGuard.isSafeMode()) return page.text.get("vault_capture_safe_mode");
+        if (Settings.preferences != null && Settings.preferences.getBoolean("paused", false)) {
+            return page.text.get("vault_capture_paused");
+        }
+        return "";
+    }
+
+    void refreshCaptureStatus() {
+        if (captureStatus == null) return;
+        String caption = captureBlockCaption();
+        captureStatus.setText(caption);
+        captureStatus.setVisibility(caption.isEmpty() ? android.view.View.GONE : android.view.View.VISIBLE);
+    }
+
     void destroy() {
+        if (mediaDialog != null) mediaDialog.dismiss();
         stopAudio();
         if (dialog != null) dialog.dismiss();
     }
@@ -74,6 +96,10 @@ final class VaultSheet {
             try { player.stop(); } catch (RuntimeException ignored) {}
             player.release();
             player = null;
+        }
+        if (audioFile != null) {
+            audioFile.delete();
+            audioFile = null;
         }
     }
 
@@ -86,9 +112,12 @@ final class VaultSheet {
         shown = PAGE;
         SettingsDialog sheet = new SettingsDialog(page, page.ui, page.text,
             page.text.get("vault_title"), page.text.get("vault_hint"));
+        String blocked = captureBlockCaption();
+        if (!blocked.isEmpty()) page.ui.add(sheet.body, page.ui.text(blocked, 13, page.ui.warning, false), 0);
         dialog = sheet.dialog;
         dialog.setOnDismissListener(dismissed -> {
             stopAudio();
+            if (mediaDialog != null) mediaDialog.dismiss();
             if (dialog == dismissed) {
                 dialog = null;
                 list = null;
@@ -233,16 +262,16 @@ final class VaultSheet {
             page.ui.add(card, page.ui.text(page.text.get("vault_edited_from", entry.editedFrom), 13, page.ui.muted, false), 4);
         }
         if (!Vault72h.MEDIA_NONE.equals(entry.mediaStatus)) {
-            LinearLayout media = page.ui.row();
-            page.ui.add(media, page.ui.text(mediaLabel(entry.mediaStatus), 13, page.ui.muted, false), 0);
+            page.ui.add(card, page.ui.text(mediaLabel(entry.mediaStatus), 13, page.ui.muted, false), 6);
             if (entry.hasMedia()) {
+                LinearLayout media = page.ui.row();
                 Button open = page.ui.button(page.text.get("vault_open_media"));
                 open.setTag("vault_open_media");
                 open.setOnClickListener(clicked -> openMedia(entry));
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
                 params.setMarginStart(page.ui.dp(8));
                 media.addView(open, params);
-                if (Vault72h.KIND_PHOTO.equals(entry.kind) || Vault72h.KIND_VIDEO.equals(entry.kind)) {
+                if (Vault72h.exportable(entry)) {
                     Button save = page.ui.button(page.text.get("vault_save_gallery"));
                     save.setTag("vault_save_gallery");
                     save.setOnClickListener(clicked -> saveToGallery(entry));
@@ -250,8 +279,8 @@ final class VaultSheet {
                     saveParams.setMarginStart(page.ui.dp(8));
                     media.addView(save, saveParams);
                 }
+                page.ui.add(card, media, 6);
             }
-            page.ui.add(card, media, 6);
         }
         if (!entry.diag.isEmpty() && !entry.hasMedia()) {
             page.ui.add(card, page.ui.text(entry.diag, 11, page.ui.muted, false), 2);
@@ -334,53 +363,106 @@ final class VaultSheet {
                         page.feedback(page.text.get("vault_media_unavailable"), Toast.LENGTH_LONG);
                         return;
                     }
-                    SettingsDialog sheet = new SettingsDialog(page, page.ui, page.text,
-                        page.text.get("vault_title"), "");
-                    ImageView view = new ImageView(page);
-                    if (shownDrawable != null) {
-                        view.setImageDrawable(shownDrawable);
-                        if (shownDrawable instanceof android.graphics.drawable.AnimatedImageDrawable) {
-                            ((android.graphics.drawable.AnimatedImageDrawable) shownDrawable).start();
-                        }
-                    } else {
-                        view.setImageBitmap(shown);
-                    }
-                    view.setAdjustViewBounds(true);
-                    sheet.body.addView(view);
-                    Button close = page.ui.primaryButton(page.text.get("vault_close"));
-                    close.setOnClickListener(clicked -> sheet.dialog.dismiss());
-                    sheet.action(close);
-                    sheet.show();
+                    if (page.isFinishing() || page.isDestroyed() || dialog == null) return;
+                    showPicture(shownDrawable, shown);
+                    VaultDiag.media("viewer", "image_open");
                 });
             });
             return;
         }
-        File playable = Vault72h.mediaCacheFile(page, entry);
-        if (playable == null) {
-            page.feedback(page.text.get("vault_media_unavailable"), Toast.LENGTH_LONG);
-            return;
-        }
-        if (Vault72h.KIND_VIDEO.equals(entry.kind)) {
-            SettingsDialog sheet = new SettingsDialog(page, page.ui, page.text, page.text.get("vault_title"), "");
-            VideoView video = new VideoView(page);
-            video.setVideoPath(playable.getAbsolutePath());
-            video.setMediaController(new android.widget.MediaController(page));
-            sheet.body.addView(video, new LinearLayout.LayoutParams(-1, page.ui.dp(320)));
-            Button close = page.ui.primaryButton(page.text.get("vault_close"));
-            close.setOnClickListener(clicked -> { video.stopPlayback(); sheet.dialog.dismiss(); });
-            sheet.action(close);
-            sheet.show();
-            video.start();
-            return;
-        }
-        // A voice clip or another audio file: play it, tapping again stops it.
+        WORK.execute(() -> {
+            File playable = Vault72h.mediaCacheFile(page, entry);
+            page.runOnUiThread(() -> {
+                if (page.isFinishing() || page.isDestroyed() || dialog == null) {
+                    if (playable != null) playable.delete();
+                    return;
+                }
+                if (playable == null) {
+                    page.feedback(page.text.get("vault_media_unavailable"), Toast.LENGTH_LONG);
+                } else if (Vault72h.KIND_VIDEO.equals(entry.kind)) {
+                    playVideo(playable);
+                } else {
+                    playAudio(playable);
+                }
+            });
+        });
+    }
+
+    private void showPicture(android.graphics.drawable.Drawable drawable, android.graphics.Bitmap picture) {
+        if (mediaDialog != null) mediaDialog.dismiss();
+        Dialog viewer = new Dialog(page, android.R.style.Theme_Material_NoActionBar_Fullscreen);
+        android.widget.FrameLayout frame = new android.widget.FrameLayout(page);
+        frame.setBackgroundColor(android.graphics.Color.BLACK);
+        ImageView image = new ImageView(page);
+        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        if (drawable != null) image.setImageDrawable(drawable);
+        else image.setImageBitmap(picture);
+        frame.addView(image, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        Button close = page.ui.primaryButton(page.text.get("vault_close"));
+        android.widget.FrameLayout.LayoutParams closeParams =
+            new android.widget.FrameLayout.LayoutParams(-2, -2, android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL);
+        closeParams.bottomMargin = page.ui.dp(20);
+        frame.addView(close, closeParams);
+        close.setOnClickListener(clicked -> viewer.dismiss());
+        viewer.setContentView(frame);
+        android.graphics.drawable.AnimatedImageDrawable animation = drawable instanceof android.graphics.drawable.AnimatedImageDrawable
+            ? (android.graphics.drawable.AnimatedImageDrawable) drawable : null;
+        viewer.setOnDismissListener(closed -> {
+            if (animation != null) animation.stop();
+            mediaDialog = null;
+        });
+        mediaDialog = viewer;
+        viewer.show();
+        if (animation != null) animation.start();
+    }
+
+    private void playVideo(File playable) {
+        if (mediaDialog != null) mediaDialog.dismiss();
         stopAudio();
+        SettingsDialog sheet = new SettingsDialog(page, page.ui, page.text, page.text.get("vault_title"), "");
+        VideoView video = new VideoView(page);
+        video.setVideoPath(playable.getAbsolutePath());
+        video.setMediaController(new android.widget.MediaController(page));
+        video.setOnPreparedListener(prepared -> VaultDiag.media("viewer", "video_ready"));
+        video.setOnErrorListener((media, what, extra) -> {
+            VaultDiag.media("viewer", "video_error");
+            page.feedback(page.text.get("vault_media_failed"), Toast.LENGTH_LONG);
+            sheet.dialog.dismiss();
+            return true;
+        });
+        sheet.dialog.setOnDismissListener(closed -> {
+            video.stopPlayback();
+            playable.delete();
+            mediaDialog = null;
+        });
+        mediaDialog = sheet.dialog;
+        sheet.body.addView(video, new LinearLayout.LayoutParams(-1, page.ui.dp(320)));
+        Button close = page.ui.primaryButton(page.text.get("vault_close"));
+        close.setOnClickListener(clicked -> sheet.dialog.dismiss());
+        sheet.action(close);
+        sheet.show();
+        video.start();
+    }
+
+    private void playAudio(File playable) {
+        stopAudio();
+        audioFile = playable;
         try {
             player = new MediaPlayer();
             player.setDataSource(playable.getAbsolutePath());
             player.setOnCompletionListener(done -> stopAudio());
-            player.prepare();
-            player.start();
+            player.setOnErrorListener((media, what, extra) -> {
+                stopAudio();
+                VaultDiag.media("viewer", "audio_error");
+                page.feedback(page.text.get("vault_media_failed"), Toast.LENGTH_LONG);
+                return true;
+            });
+            player.setOnPreparedListener(prepared -> {
+                if (player != prepared) return;
+                prepared.start();
+                VaultDiag.media("viewer", "audio_ready");
+            });
+            player.prepareAsync();
         } catch (Exception unreadable) {
             stopAudio();
             page.feedback(page.text.get("vault_media_failed"), Toast.LENGTH_LONG);

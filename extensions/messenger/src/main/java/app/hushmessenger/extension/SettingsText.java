@@ -673,6 +673,8 @@ final class SettingsText {
         ENGLISH.put("message_log_save_expiring", "Save messages before they're removed");
         ENGLISH.put("message_log_save_expiring_help", "Right before the log removes a message, it's added to a text file in Download/Messenger, one file a month. That file isn't encrypted, so apps that can read your files can read it.");
         ENGLISH.put("vault_title", "Temporary Vault");
+        ENGLISH.put("vault_capture_safe_mode", "Vault capture is off while Safe mode is active.");
+        ENGLISH.put("vault_capture_paused", "Vault capture is paused by Pause all changes.");
         ENGLISH.put("vault_hint", "Everything here was saved on this phone when it arrived and is deleted 72 hours later. View-once messages are never saved.");
         ENGLISH.put("vault_view", "Open Vault");
         ENGLISH.put("vault_clear", "Clear Vault");

@@ -17,6 +17,9 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executors;
@@ -44,8 +47,7 @@ import javax.crypto.spec.GCMParameterSpec;
  *
  * <p>Storage is a SQLite database in Messenger's private files folder. Words, sender and chat names are sealed
  * with an AES-GCM key the Android keystore holds; media files are sealed as a GCM stream under their own key,
- * so a file of any size streams to disk without being held in memory and the vault sets no size limit of its
- * own. Nothing is uploaded anywhere. Expiry is enforced on every read ({@code expires_at > now}) as well as by
+ * so a file streams to disk without being held in memory. Nothing is uploaded anywhere. Expiry is enforced on every read ({@code expires_at > now}) as well as by
  * a purge that runs at Messenger start, every hour, and whenever the vault is opened, so an expired copy can't
  * be opened even if the purge hasn't run yet.
  *
@@ -87,6 +89,8 @@ public final class Vault72h {
     static final int MAX_NAME_CHARS = MessageLog.MAX_NAME_CHARS;
     private static final int IV_BYTES = 12;
     private static final int TAG_BITS = 128;
+    private static final long MAX_MEDIA_BYTES = 128L * 1024 * 1024;
+    static java.util.function.LongSupplier clock = System::currentTimeMillis;
 
     // Kinds an entry can be. TEXT is a message with words of its own.
     static final String KIND_TEXT = "TEXT";
@@ -287,6 +291,7 @@ public final class Vault72h {
                 byte[] sealed = cipher.update(buffer, 0, read);
                 if (sealed != null) out.write(sealed);
                 written += read;
+                if (written > MAX_MEDIA_BYTES) throw new IOException("media size limit");
             }
             byte[] tail = cipher.doFinal();
             if (tail != null) out.write(tail);
@@ -314,7 +319,7 @@ public final class Vault72h {
 
     /** The whole media file for [entry], unsealed. For pictures and tests; video and audio play from a cache file. */
     static byte[] openMedia(Context context, Entry entry) {
-        if (context == null || entry == null || !entry.hasMedia()) return null;
+        if (context == null || entry == null || !entry.hasMedia() || entry.expiresAt <= clock.getAsLong()) return null;
         File file = mediaFile(context, entry.mediaName);
         try (InputStream in = openStream(file)) {
             if (in == null) return null;
@@ -335,19 +340,26 @@ public final class Vault72h {
      */
     static File mediaCacheFile(Context context, Entry entry) {
         if (context == null || entry == null || !entry.hasMedia()) return null;
-        String extension = KIND_AUDIO.equals(entry.kind) ? ".m4a" : KIND_VIDEO.equals(entry.kind) ? ".mp4" : ".bin";
-        File out = new File(context.getCacheDir(), "vault_" + entry.mediaName + extension);
-        if (out.isFile() && out.length() > 0) return out;
+        VaultMediaFormat format = VaultMediaFormat.forMime(entry.mediaKind);
+        String suffix = format == null ? ".bin" : format.suffix;
+        File out = null;
         try (InputStream in = openStream(mediaFile(context, entry.mediaName))) {
             if (in == null) return null;
+            out = File.createTempFile("vault_" + entry.mediaName + "_", suffix, context.getCacheDir());
             try (FileOutputStream sink = new FileOutputStream(out)) {
                 byte[] buffer = new byte[16 * 1024];
                 int read;
                 while ((read = in.read(buffer)) != -1) sink.write(buffer, 0, read);
             }
+            synchronized (LOCK) {
+                if (!liveEntryLocked(db(context), entry.rowId) || !out.isFile() || out.length() == 0) {
+                    out.delete();
+                    return null;
+                }
+            }
             return out;
         } catch (Exception unreadable) {
-            out.delete();
+            if (out != null) out.delete();
             Settings.hookFailedPrivately(KEY, "Can't prepare a vault media file to play", unreadable);
             return null;
         }
@@ -356,15 +368,17 @@ public final class Vault72h {
     /** Told how a gallery export ended: the copy is in the phone's gallery, or it couldn't be put there. */
     interface GalleryResult { void done(boolean saved); }
 
-    /**
-     * Copies [entry]'s kept photo or video into the phone's gallery through MediaStore, on the media thread.
-     * The gallery copy is the user's own from then on: the vault's 72 hours and Clear Vault never touch it.
-     * Only a stored photo or video can be exported; anything else reports failure without touching the store.
-     */
+    static boolean exportable(Entry entry) {
+        return entry.hasMedia() && android.os.Build.VERSION.SDK_INT >= 29
+            && (KIND_PHOTO.equals(entry.kind) || KIND_VIDEO.equals(entry.kind) || KIND_AUDIO.equals(entry.kind)
+                || KIND_GIF.equals(entry.kind) || KIND_STICKER.equals(entry.kind));
+    }
+
+    /** Exports an authorized copy on the media worker. */
     static void exportToGallery(Context context, Entry entry, GalleryResult result) {
-        if (context == null || entry == null || !entry.hasMedia()
-            || !(KIND_PHOTO.equals(entry.kind) || KIND_VIDEO.equals(entry.kind))) {
-            if (result != null) result.done(false);
+        if (result == null) return;
+        if (context == null || entry == null || !exportable(entry)) {
+            result.done(false);
             return;
         }
         try {
@@ -374,47 +388,52 @@ public final class Vault72h {
         }
     }
 
-    /** The export itself, on the calling thread. True only when the gallery holds the whole copy. */
     static boolean saveToGallery(Context context, Entry entry) {
-        boolean video = KIND_VIDEO.equals(entry.kind);
-        android.content.ContentValues values = new android.content.ContentValues();
-        values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
-            "hush_vault_" + entry.mediaName.substring(0, Math.min(12, entry.mediaName.length()))
-                + (video ? ".mp4" : ".jpg"));
-        values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, video ? "video/mp4" : "image/jpeg");
-        if (android.os.Build.VERSION.SDK_INT >= 29) {
-            values.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
-                video ? "Movies/HushVault" : "Pictures/HushVault");
-            values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
-        }
+        if (!exportable(entry) || entry.expiresAt <= clock.getAsLong()) return false;
         android.content.ContentResolver resolver = context.getContentResolver();
-        android.net.Uri collection = video
-            ? android.provider.MediaStore.Video.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
-            : android.provider.MediaStore.Images.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY);
         android.net.Uri item = null;
         try (InputStream in = openStream(mediaFile(context, entry.mediaName))) {
             if (in == null) return false;
+            String declared = KIND_VIDEO.equals(entry.kind) ? MessageLogAttachment.VIDEO
+                : KIND_AUDIO.equals(entry.kind) ? MessageLogAttachment.AUDIO : MessageLogAttachment.PHOTO;
+            VaultMediaFormat.Payload payload = VaultMediaFormat.probe(in, declared);
+            if (payload == null || !payload.format.accepts(declared)) return false;
+            VaultMediaFormat format = payload.format;
+            boolean video = format.mime.startsWith("video/");
+            boolean audio = format.mime.startsWith("audio/");
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+                "hush_vault_" + entry.mediaName.substring(0, Math.min(12, entry.mediaName.length())) + format.suffix);
+            values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, format.mime);
+            values.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                video ? "Movies/HushVault" : audio ? "Music/HushVault" : "Pictures/HushVault");
+            values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+            String volume = android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY;
+            android.net.Uri collection = video ? android.provider.MediaStore.Video.Media.getContentUri(volume)
+                : audio ? android.provider.MediaStore.Audio.Media.getContentUri(volume)
+                : android.provider.MediaStore.Images.Media.getContentUri(volume);
+
             item = resolver.insert(collection, values);
             if (item == null) return false;
-            try (java.io.OutputStream out = resolver.openOutputStream(item)) {
-                if (out == null) throw new java.io.IOException("no gallery stream");
-                byte[] buffer = new byte[16 * 1024];
+            try (OutputStream out = resolver.openOutputStream(item)) {
+                if (out == null) throw new IOException("no gallery stream");
+                byte[] bytes = new byte[16 * 1024];
                 int read;
-                long total = 0;
-                while ((read = in.read(buffer)) != -1) { out.write(buffer, 0, read); total += read; }
-                if (total <= 0) throw new java.io.IOException("empty media");
+                while ((read = payload.bytes.read(bytes)) != -1) out.write(bytes, 0, read);
             }
-            if (android.os.Build.VERSION.SDK_INT >= 29) {
-                android.content.ContentValues done = new android.content.ContentValues();
+            synchronized (LOCK) {
+                if (!liveEntryLocked(db(context), entry.rowId)) throw new IOException("entry expired");
+                ContentValues done = new ContentValues();
                 done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
-                resolver.update(item, done, null, null);
+                if (resolver.update(item, done, null, null) != 1) throw new IOException("export publish failed");
             }
+            VaultDiag.media("export", "saved");
             return true;
-        } catch (Throwable failure) {
+        } catch (Exception failure) {
             if (item != null) {
-                try { resolver.delete(item, null, null); } catch (Throwable ignored) {}
+                try { resolver.delete(item, null, null); } catch (Exception ignored) {}
             }
-            Settings.hookFailedPrivately(KEY, "Can't save a vault media file to the gallery", failure);
+            VaultDiag.media("export", "failed");
             return false;
         }
     }
@@ -427,6 +446,7 @@ public final class Vault72h {
     // --- Database -------------------------------------------------------------------------------------------
 
     private static final Object LOCK = new Object();
+    private static final java.util.Set<String> IN_FLIGHT = new java.util.HashSet<>();
     private static Helper helper;
 
     private static final class Helper extends SQLiteOpenHelper {
@@ -461,6 +481,7 @@ public final class Vault72h {
             if (helper == null) {
                 helper = new Helper(context);
                 SQLiteDatabase opened = helper.getWritableDatabase();
+                recoverMediaLocked(context, opened);
                 VaultDiag.init("db=" + DB_NAME + " version=" + opened.getVersion());
                 VaultDiag.databaseOpen("db=" + DB_NAME + " version=" + opened.getVersion());
                 return opened;
@@ -473,6 +494,7 @@ public final class Vault72h {
     static void resetForTests() {
         synchronized (LOCK) {
             if (helper != null) { helper.close(); helper = null; }
+            DEFERRED_MEDIA.clear();
         }
     }
 
@@ -489,6 +511,27 @@ public final class Vault72h {
             thread.setDaemon(true);
             return thread;
         });
+    private static final long RESOLUTION_WAIT_MS = 10_000;
+    private static final int MAX_DEFERRED_MEDIA = 64;
+    private static final int MAX_DEFERRED_ADDRESSES = 8;
+    private static final int MAX_ADDRESS_LENGTH = 8192;
+    private static final List<DeferredMedia> DEFERRED_MEDIA = new ArrayList<>();
+    private static boolean deferredCleanupScheduled;
+
+    private static final class DeferredMedia {
+        final String id, thread, diag;
+        final MessageLogAttachment.Found found;
+        final long expiresAt;
+
+        DeferredMedia(String id, String thread, MessageLogAttachment.Found found, String diag, long expiresAt) {
+            this.id = id;
+            this.thread = thread;
+            this.found = found;
+            this.diag = diag;
+            this.expiresAt = expiresAt;
+        }
+    }
+
     private static final AtomicBoolean PURGE_SCHEDULED = new AtomicBoolean();
 
     /**
@@ -583,7 +626,8 @@ public final class Vault72h {
         // A sticker or a GIF arrives shaped like a photo — its data is a photo's data — so the scan's declared
         // shape refines a photo kind into the kind the attachment actually is.
         if (shaped != null && KIND_PHOTO.equals(kind)
-            && (KIND_STICKER.equals(shaped) || KIND_GIF.equals(shaped))) kind = shaped;
+            && (KIND_STICKER.equals(shaped) || KIND_GIF.equals(shaped)
+                || KIND_VIDEO.equals(shaped) || KIND_AUDIO.equals(shaped))) kind = shaped;
         // A message that is only emoji is filed as one, so the vault's kinds say what the message is.
         if (KIND_TEXT.equals(kind) && isEmojiOnly(words)) kind = KIND_EMOJI;
         // The notification hook hands over no names; the message log reads them off the notification that
@@ -613,20 +657,11 @@ public final class Vault72h {
                 long rowId = mergeOrInsertLocked(db, keptId, dedup, !keptId.isEmpty(), keptThread, keptSender,
                     keptChat, senderId, kind, words, sentAt > 0 ? sentAt : now, now, source, found, attachment,
                     diag == null ? "" : diag, shaped != null);
-                if (rowId >= 0 && found != null) {
-                    String current = mediaStatusLocked(db, rowId);
-                    if (!MEDIA_STORED.equals(current)) {
-                        if (mediaWanted(found.kind)) {
-                            updateMediaStatusLocked(db, rowId, MEDIA_PENDING, "", found.kind, 0);
-                            fetchMedia(context, rowId, keptThread, keptId, found);
-                        } else {
-                            // The vault's keep switch for this kind is off, so nothing will be fetched;
-                            // the entry says so instead of looking like a message with no media at all.
-                            updateMediaStatusLocked(db, rowId, MEDIA_NOT_KEPT, "", found.kind, 0);
-                        }
-                    }
+                if (rowId >= 0) {
+                    if (found != null) queueMediaLocked(context, db, rowId, kind, found);
+                    drainDeferredLocked(context, db, keptId, now);
+                    Settings.activeAt.put(KEY, now);
                 }
-                if (rowId >= 0) Settings.activeAt.put(KEY, now);
                 return rowId;
             }
         } catch (SQLiteFullException full) {
@@ -675,7 +710,10 @@ public final class Vault72h {
                 long rowId = mergeOrInsertLocked(db, key, dedup, !keptId.isEmpty(), "", "", "",
                     senderId, KIND_TEXT, MessageLog.clip(text, MAX_TEXT_CHARS), sentAt > 0 ? sentAt : now, now,
                     SOURCE_ROW, null, false, "", false);
-                if (rowId >= 0) Settings.activeAt.put(KEY, now);
+                if (rowId >= 0) {
+                    drainDeferredLocked(context, db, key, now);
+                    Settings.activeAt.put(KEY, now);
+                }
                 return rowId;
             }
         } catch (SQLiteFullException full) {
@@ -692,9 +730,8 @@ public final class Vault72h {
     /** What kind of entry a capture is, from its media when it has some and from Messenger's own words when not. */
     static String kindOf(String words, MessageLogAttachment.Found found, boolean attachment) {
         if (found != null) {
-            if (MessageLogAttachment.AUDIO.equals(found.kind)) return KIND_AUDIO;
-            if (MessageLogAttachment.VIDEO.equals(found.kind)) return KIND_VIDEO;
-            return KIND_PHOTO;
+            String shaped = kindForShape(found.kind);
+            return shaped == null ? KIND_ATTACHMENT : shaped;
         }
         if (!attachment) return KIND_TEXT;
         String said = words == null ? "" : words.toLowerCase(java.util.Locale.ROOT);
@@ -741,112 +778,128 @@ public final class Vault72h {
         return any;
     }
 
-    /**
-     * Media for a message the vault already archived, resolved later — Messenger's thread view resolving the
-     * message's media for display is the moment its addresses exist, above all in encrypted chats, whose
-     * notification-time message carries none. Queued like a capture; the fetch itself runs on the media thread.
-     * A null [found] still records [diag], so the entry can show what the thread-side message carried.
-     */
-    static void attachFound(String id, MessageLogAttachment.Found found, String diag) {
+    /** Delivers resolved metadata on the writer, after the hook has checked the message. */
+    static void attachFound(String id, String thread, MessageLogAttachment.Found found, String diag) {
         if (id == null || id.isEmpty()) return;
-        final String keptId = MessageLog.clip(id, MAX_ID_CHARS);
-        final MessageLogAttachment.Found keptFound = found;
-        final String keptDiag = diag == null ? "" : diag;
         try {
-            WRITER.execute(() -> attachFoundNow(keptId, keptFound, keptDiag, System.currentTimeMillis()));
+            WRITER.execute(() -> {
+                if (Settings.vaultWanted()) attachFoundNow(id, thread, found, diag, System.currentTimeMillis());
+            });
         } catch (RuntimeException rejected) {
-            Settings.hookFailedPrivately(KEY, "Can't queue resolved media for the vault", rejected);
+            VaultDiag.media("associate", "queue_rejected");
         }
     }
 
-    /** How long after an entry was taken a resolution delivery may still be matched to it by kind alone. */
-    private static final long RESOLUTION_MATCH_WINDOW_MS = 15 * 60_000L;
-
-    /**
-     * Attaches [found] to the entry for [id] on the calling thread and starts its fetch. Returns false when no
-     * live entry is the delivery's — resolution only enriches what a capture already archived — or when the
-     * media is view-once, which the vault never takes on any surface.
-     *
-     * The match is by the message's own id first. One delivery in an encrypted chat can carry an id spelled
-     * differently from the one the entry was archived under — the surfaces name a message in their own ways —
-     * so a delivery whose id matches nothing falls back to the entry it must mean: the one live entry of the
-     * same kind, still without its media, taken within {@link #RESOLUTION_MATCH_WINDOW_MS}. Two such entries
-     * could be either one's, and the delivery is dropped rather than filed under the wrong message.
-     */
     static boolean attachFoundNow(String id, MessageLogAttachment.Found found, String diag, long now) {
+        return attachFoundNow(id, "", found, diag, now);
+    }
+
+    static boolean attachFoundNow(String id, String thread, MessageLogAttachment.Found found, String diag, long now) {
         Context context = Settings.appContext;
-        if (context == null || id == null || id.isEmpty()) return false;
+        if (context == null || id == null || id.isEmpty() || id.length() > MAX_ID_CHARS) return false;
         if (found != null && MessageLogAttachment.EPHEMERAL.equals(found.kind)) return false;
+        String keptThread = MessageLog.clip(thread == null ? "" : thread, MAX_THREAD_CHARS);
         try {
             synchronized (LOCK) {
                 SQLiteDatabase db = db(context);
-                purgeLocked(context, db, now);
-                Cursor row = db.query("entries", new String[] {"row_id", "thread", "kind", "media_status", "diag",
-                        "msg_id"},
-                    "msg_id=? AND expires_at>?", new String[] {id, String.valueOf(now)}, null, null, null, "1");
-                long rowId;
-                String thread, kind, status, oldDiag;
-                try {
-                    if (!row.moveToFirst()) {
-                        if (found == null) {
-                            VaultDiag.filtered("no_matching_entry");
-                            return false;
-                        }
-                        String shaped = kindForShape(found.kind);
-                        if (shaped == null) return false;
-                        Cursor candidates = db.query("entries",
-                            new String[] {"row_id", "thread", "kind", "media_status", "diag", "msg_id"},
-                            "kind=? AND media_status<>? AND received_at>=? AND expires_at>?",
-                            new String[] {shaped, MEDIA_STORED, String.valueOf(now - RESOLUTION_MATCH_WINDOW_MS),
-                                String.valueOf(now)},
-                            null, null, null, "2");
-                        try {
-                            if (candidates.getCount() != 1 || !candidates.moveToFirst()) {
-                                VaultDiag.filtered(candidates.getCount() == 0
-                                    ? "no_candidate" : "ambiguous_candidate");
-                                return false;
-                            }
-                            rowId = candidates.getLong(0);
-                            thread = candidates.getString(1);
-                            kind = candidates.getString(2);
-                            status = candidates.getString(3);
-                            oldDiag = candidates.getString(4);
-                            id = candidates.getString(5);
-                        } finally { candidates.close(); }
-                    } else {
-                        rowId = row.getLong(0);
-                        thread = row.getString(1);
-                        kind = row.getString(2);
-                        status = row.getString(3);
-                        oldDiag = row.getString(4);
-                    }
-                } finally { row.close(); }
-                // A later surface's fingerprint replaces the arrival one: what the thread view's resolution
-                // saw is strictly more informative than what the notification-time message carried.
-                if (diag != null && !diag.isEmpty() && !diag.equals(oldDiag)) {
-                    ContentValues values = new ContentValues();
-                    values.put("diag", diag);
-                    db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
-                }
-                if (found == null || MEDIA_STORED.equals(status)) return true;
-                String shaped = kindForShape(found.kind);
-                if (shaped != null && (KIND_TEXT.equals(kind) || KIND_ATTACHMENT.equals(kind))) {
-                    ContentValues values = new ContentValues();
-                    values.put("kind", shaped);
-                    db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
-                }
-                if (mediaWanted(found.kind)) {
-                    updateMediaStatusLocked(db, rowId, MEDIA_PENDING, "", found.kind, 0);
-                    fetchMedia(context, rowId, thread == null ? "" : thread, id, found);
-                } else {
-                    updateMediaStatusLocked(db, rowId, MEDIA_NOT_KEPT, "", found.kind, 0);
-                }
-                return true;
+                int match = attachExactLocked(context, db, id, keptThread, found, diag, now);
+                if (match == 0 && found != null) deferLocked(id, keptThread, found, diag, now);
+                return match == 1;
             }
-        } catch (Throwable failure) {
-            Settings.hookFailedPrivately(KEY, "Can't attach resolved media in the vault", failure);
+        } catch (Exception failure) {
+            VaultDiag.media("associate", "database_error");
             return false;
         }
+    }
+
+    /** Returns 0 if a row can still arrive, -1 for conflicting identities, or 1 for a match. */
+    private static int attachExactLocked(Context context, SQLiteDatabase db, String id, String thread,
+                                         MessageLogAttachment.Found found, String diag, long now) {
+        try (Cursor row = db.query("entries", new String[] {"row_id", "thread", "kind", "diag"},
+            "msg_id=? AND expires_at>?", new String[] {id, String.valueOf(now)}, null, null, null, "2")) {
+            if (!row.moveToFirst()) return 0;
+            if (row.getCount() != 1) {
+                VaultDiag.media("associate", "ambiguous_id");
+                return -1;
+            }
+            String storedThread = row.getString(1);
+            if (!thread.isEmpty() && !storedThread.isEmpty() && !thread.equals(storedThread)) {
+                VaultDiag.media("associate", "thread_mismatch");
+                return -1;
+            }
+            long rowId = row.getLong(0);
+            if (diag != null && !diag.isEmpty() && !diag.equals(row.getString(3))) {
+                ContentValues values = new ContentValues();
+                values.put("diag", diag);
+                db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
+            }
+            if (found != null) queueMediaLocked(context, db, rowId, row.getString(2), found);
+            VaultDiag.media("associate", "matched");
+            return 1;
+        }
+    }
+
+    private static void deferLocked(String id, String thread, MessageLogAttachment.Found found, String diag, long now) {
+        DEFERRED_MEDIA.removeIf(held -> held.expiresAt <= now);
+        LinkedHashSet<String> addresses = new LinkedHashSet<>();
+        long expiresAt = now + RESOLUTION_WAIT_MS;
+        for (Iterator<DeferredMedia> items = DEFERRED_MEDIA.iterator(); items.hasNext();) {
+            DeferredMedia held = items.next();
+            if (!held.id.equals(id) || !held.thread.equals(thread) || !held.found.kind.equals(found.kind)) continue;
+            if (Arrays.equals(held.found.addresses, found.addresses)) return;
+            expiresAt = held.expiresAt;
+            addresses.addAll(Arrays.asList(held.found.addresses));
+            items.remove();
+            break;
+        }
+        for (String address : found.addresses) {
+            if (addresses.size() >= MAX_DEFERRED_ADDRESSES) break;
+            if (address != null && address.length() <= MAX_ADDRESS_LENGTH) addresses.add(address);
+        }
+        if (addresses.isEmpty()) return;
+        if (DEFERRED_MEDIA.size() == MAX_DEFERRED_MEDIA) DEFERRED_MEDIA.remove(0);
+        DEFERRED_MEDIA.add(new DeferredMedia(id, thread,
+            new MessageLogAttachment.Found(addresses.toArray(new String[0]), found.kind), diag, expiresAt));
+        VaultDiag.media("associate", "waiting_for_insert");
+        if (!deferredCleanupScheduled) {
+            deferredCleanupScheduled = true;
+            WRITER.scheduleWithFixedDelay(() -> {
+                synchronized (LOCK) {
+                    long time = System.currentTimeMillis();
+                    DEFERRED_MEDIA.removeIf(held -> held.expiresAt <= time);
+                }
+            }, RESOLUTION_WAIT_MS, 1_000, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private static void drainDeferredLocked(Context context, SQLiteDatabase db, String id, long now) {
+        if (id.isEmpty()) return;
+        for (Iterator<DeferredMedia> items = DEFERRED_MEDIA.iterator(); items.hasNext();) {
+            DeferredMedia held = items.next();
+            if (held.expiresAt <= now || (held.id.equals(id)
+                && attachExactLocked(context, db, id, held.thread, held.found, held.diag, now) != 0)) {
+                items.remove();
+            }
+        }
+    }
+
+    private static void queueMediaLocked(Context context, SQLiteDatabase db, long rowId, String declared,
+                                         MessageLogAttachment.Found found) {
+        String current = mediaStatusLocked(db, rowId);
+        if (MEDIA_STORED.equals(current)) return;
+        String kind = found.kind;
+        if (MessageLogAttachment.PHOTO.equals(kind)) {
+            if (KIND_VIDEO.equals(declared)) kind = MessageLogAttachment.VIDEO;
+            if (KIND_AUDIO.equals(declared)) kind = MessageLogAttachment.AUDIO;
+            if (KIND_STICKER.equals(declared)) kind = MessageLogAttachment.STICKER;
+            if (KIND_GIF.equals(declared)) kind = MessageLogAttachment.GIF;
+        }
+        if (!mediaWanted(kind)) {
+            if (!MEDIA_PENDING.equals(current)) updateMediaStatusLocked(db, rowId, MEDIA_NOT_KEPT, "", kind, 0);
+            return;
+        }
+        updateMediaStatusLocked(db, rowId, MEDIA_PENDING, "", kind, 0);
+        fetchMedia(context, rowId, new MessageLogAttachment.Found(found.addresses, kind));
     }
 
     /** Whether the vault's own keep switch for this media kind is on. The message log's switches don't decide. */
@@ -1001,12 +1054,32 @@ public final class Vault72h {
         } finally { row.close(); }
     }
 
-    private static boolean entryExistsLocked(SQLiteDatabase db, long rowId) {
-        Cursor row = db.query("entries", new String[] {"row_id"}, "row_id=?",
-            new String[] {String.valueOf(rowId)}, null, null, null, "1");
-        try {
+    private static boolean liveEntryLocked(SQLiteDatabase db, long rowId) {
+        try (Cursor row = db.query("entries", new String[] {"row_id"}, "row_id=? AND expires_at>?",
+            new String[] {String.valueOf(rowId), String.valueOf(clock.getAsLong())}, null, null, null, "1")) {
             return row.moveToFirst();
-        } finally { row.close(); }
+        }
+    }
+
+    private static void recoverMediaLocked(Context context, SQLiteDatabase db) {
+        ContentValues interrupted = new ContentValues();
+        interrupted.put("media_status", MEDIA_FAILED);
+        int recovered = db.update("entries", interrupted, "media_status=?", new String[] {MEDIA_PENDING});
+        if (recovered > 0) VaultDiag.media("persist", "interrupted");
+
+        File dir = new File(context.getFilesDir(), MEDIA_DIR);
+        File[] files = dir.listFiles();
+        if (files != null) {
+            java.util.Set<String> referenced = new java.util.HashSet<>();
+            try (Cursor rows = db.query("entries", new String[] {"media_name"}, "media_name<>''",
+                null, null, null, null)) {
+                while (rows.moveToNext()) referenced.add(rows.getString(0));
+            }
+            for (File file : files) {
+                if (!referenced.contains(file.getName())) file.delete();
+            }
+        }
+        deletePlaybackFiles(context, "");
     }
 
     private static String mediaStatusLocked(SQLiteDatabase db, long rowId) {
@@ -1027,77 +1100,112 @@ public final class Vault72h {
         db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
     }
 
-    private static void setMediaStatus(Context context, long rowId, String status, String name, String kind, long bytes) {
-        synchronized (LOCK) {
-            try {
-                updateMediaStatusLocked(db(context), rowId, status, name, kind, bytes);
-            } catch (Throwable failure) {
-                Settings.hookFailedPrivately(KEY, "Can't record a vault media result", failure);
-            }
-        }
-    }
-
-    /**
-     * Fetches a captured message's media on the media thread and seals it into the vault. No size limit is
-     * imposed: the download streams through the cipher to disk. Any failure leaves the entry's text intact and
-     * its media status saying exactly what happened.
-     */
-    private static void fetchMedia(Context context, long rowId, String thread, String id, MessageLogAttachment.Found found) {
+    private static void fetchMedia(Context context, long rowId, MessageLogAttachment.Found found) {
+        String job = rowId + ":" + MessageLog.digest(found.kind + Arrays.toString(found.addresses));
+        if (!IN_FLIGHT.add(job)) return;
         try {
             MEDIA.execute(() -> {
-                String name = MessageLog.digest(thread + '\u0000' + id + '\u0000' + found.kind);
-                File file = mediaFile(context, name);
-                if (file != null && file.isFile() && file.length() > 0) {
-                    setMediaStatus(context, rowId, MEDIA_STORED, name, found.kind, file.length());
-                    return;
-                }
-                java.util.List<String> candidates = VaultMedia.ordered(found);
-                if (candidates.isEmpty()) {
-                    setMediaStatus(context, rowId, MEDIA_UNAVAILABLE, "", found.kind, 0);
-                    return;
-                }
-                File dir = new File(context.getFilesDir(), MEDIA_DIR);
-                if (!dir.isDirectory() && !dir.mkdirs()) {
-                    setMediaStatus(context, rowId, MEDIA_FAILED, "", found.kind, 0);
-                    return;
-                }
-                File target = new File(dir, name);
-                // A message can carry several addresses for the same file — sizes of one photo, a video
-                // and its thumbnail — and any one of them can be dead, expired or cut short. The entry is
-                // only given up on when every address has had its chance.
-                Throwable lastFailure = null;
-                for (String address : candidates) {
-                    try (InputStream in = VaultMedia.open(address)) {
-                        if (in == null) continue;
-                        long plain = sealStream(in, target);
-                        if (plain <= 0) {
-                            target.delete();
-                            continue;
-                        }
-                        // The entry may have been wiped (Clear Vault) or purged while this fetch was in
-                        // flight; a sealed file for a gone entry would outlive the wipe as an orphan, so
-                        // drop it instead of reporting it stored.
-                        synchronized (LOCK) {
-                            if (!entryExistsLocked(db(context), rowId)) { target.delete(); return; }
-                        }
-                        setMediaStatus(context, rowId, MEDIA_STORED, name, found.kind, target.length());
-                        return;
-                    } catch (Throwable failure) {
-                        target.delete();
-                        lastFailure = failure;
-                        if (isStorageFull(failure)) break;
-                    }
-                }
-                if (lastFailure != null) {
-                    setMediaStatus(context, rowId, isStorageFull(lastFailure) ? MEDIA_STORAGE_FULL : MEDIA_FAILED,
-                        "", found.kind, 0);
-                    Settings.hookFailedPrivately(KEY, "Can't keep a message's media in the vault", lastFailure);
-                } else {
-                    setMediaStatus(context, rowId, MEDIA_UNAVAILABLE, "", found.kind, 0);
+                try {
+                    persistMedia(context, rowId, found);
+                } catch (Exception failure) {
+                    VaultDiag.media("persist", "database_error");
+                } finally {
+                    synchronized (LOCK) { IN_FLIGHT.remove(job); }
                 }
             });
         } catch (RuntimeException rejected) {
-            setMediaStatus(context, rowId, MEDIA_FAILED, "", found.kind, 0);
+            IN_FLIGHT.remove(job);
+            updateMediaStatusLocked(db(context), rowId, MEDIA_FAILED, "", found.kind, 0);
+            VaultDiag.media("fetch", "queue_rejected");
+        }
+    }
+
+    private static boolean captureBlocked() {
+        android.content.SharedPreferences prefs = Settings.preferences;
+        return prefs == null || !prefs.getBoolean(KEY, false) || prefs.getBoolean("paused", false)
+            || CrashGuard.isSafeMode();
+    }
+
+    private static void persistMedia(Context context, long rowId, MessageLogAttachment.Found found) {
+        synchronized (LOCK) {
+            SQLiteDatabase db = db(context);
+            if (!liveEntryLocked(db, rowId) || MEDIA_STORED.equals(mediaStatusLocked(db, rowId))) return;
+        }
+
+        File dir = new File(context.getFilesDir(), MEDIA_DIR);
+        File target = new File(dir, MessageLog.digest("vault-row:" + rowId));
+        List<String> candidates = VaultMedia.ordered(found);
+        String result = MEDIA_UNAVAILABLE;
+        for (String address : candidates) {
+            if (captureBlocked()) {
+                result = MEDIA_NOT_KEPT;
+                break;
+            }
+            File part = null;
+            try {
+                VaultMediaFormat format;
+                String actualKind;
+                try (InputStream in = VaultMedia.open(address)) {
+                    if (in == null) {
+                        VaultDiag.media("fetch", "unavailable");
+                        continue;
+                    }
+                    VaultMediaFormat.Payload payload = VaultMediaFormat.probe(in, found.kind);
+                    if (payload == null || !payload.format.accepts(found.kind)) {
+                        VaultDiag.media("identify", payload == null ? "unknown_format" : "rejected_" + payload.format.name());
+                        result = MEDIA_FAILED;
+                        continue;
+                    }
+                    format = payload.format;
+                    actualKind = format.kind(found.kind);
+                    VaultDiag.media("identify", format.name());
+                    if (!mediaWanted(actualKind)) {
+                        result = MEDIA_NOT_KEPT;
+                        continue;
+                    }
+                    if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("media directory");
+                    part = File.createTempFile("pending-", ".part", dir);
+                    sealStream(payload.bytes, part);
+                }
+                VaultDiag.media("encryption", "sealed");
+                synchronized (LOCK) {
+                    SQLiteDatabase db = db(context);
+                    if (!liveEntryLocked(db, rowId) || MEDIA_STORED.equals(mediaStatusLocked(db, rowId))) return;
+                    if (captureBlocked() || !mediaWanted(actualKind)) {
+                        result = MEDIA_NOT_KEPT;
+                        break;
+                    }
+                    if (!part.renameTo(target)) throw new IOException("publish failed");
+                    try {
+                        ContentValues values = new ContentValues();
+                        values.put("media_status", MEDIA_STORED);
+                        values.put("media_name", target.getName());
+                        values.put("media_kind", format.mime);
+                        values.put("media_bytes", target.length());
+                        values.put("kind", kindForShape(actualKind));
+                        if (db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)}) != 1) {
+                            throw new IOException("entry disappeared");
+                        }
+                    } catch (Exception failure) {
+                        target.delete();
+                        throw failure;
+                    }
+                }
+                VaultDiag.media("persist", "stored");
+                return;
+            } catch (Exception failure) {
+                result = isStorageFull(failure) ? MEDIA_STORAGE_FULL : MEDIA_FAILED;
+                VaultDiag.media("persist", MEDIA_STORAGE_FULL.equals(result) ? "storage_full" : "read_or_write_error");
+                if (MEDIA_STORAGE_FULL.equals(result)) break;
+            } finally {
+                if (part != null) part.delete();
+            }
+        }
+        synchronized (LOCK) {
+            SQLiteDatabase db = db(context);
+            if (liveEntryLocked(db, rowId) && !MEDIA_STORED.equals(mediaStatusLocked(db, rowId))) {
+                updateMediaStatusLocked(db, rowId, result, "", found.kind, 0);
+            }
         }
     }
 
@@ -1285,6 +1393,7 @@ public final class Vault72h {
         } finally { rows.close(); }
         int removed = db.delete("entries", "expires_at<=?", new String[] {String.valueOf(now)});
         for (String name : media) {
+            deletePlaybackFiles(context, name);
             File file = mediaFile(context, name);
             if (file != null && file.exists() && !file.delete()) {
                 Settings.hookFailedPrivately(KEY, "Can't delete an expired vault media file", new IOException("delete failed: " + name));
@@ -1293,12 +1402,20 @@ public final class Vault72h {
         return removed;
     }
 
+    private static void deletePlaybackFiles(Context context, String name) {
+        File[] files = context.getCacheDir().listFiles((dir, file) -> file.startsWith("vault_" + name)
+            && file.matches("vault_[0-9a-f]{64}([_.].*)"));
+        if (files != null) for (File file : files) file.delete();
+    }
+
     /** Deletes the whole archive at once: every row, every media file, and both keys, so nothing can be reopened. */
     static boolean clearAll() {
         Context context = Settings.appContext;
         if (context == null) return false;
         synchronized (LOCK) {
             boolean cleared = true;
+            DEFERRED_MEDIA.clear();
+            deletePlaybackFiles(context, "");
             try {
                 db(context).delete("entries", null, null);
             } catch (Throwable failure) {

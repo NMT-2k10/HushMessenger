@@ -941,6 +941,8 @@ ios_bars.description	聊天室的頂端列和訊息框變成半透明，訊息�
 temporary_vault.title	暫存保管庫（72 小時）
 temporary_vault.description	在訊息到達時以及在開啟的聊天顯示訊息時，將訊息保存在這支手機上 72 小時，讓你在訊息被收回後仍可閱讀，並在每份副本滿 72 小時時刪除。閱後即焚訊息永遠不會被保存。內容經過加密，只保留在你的手機上。相片、影片和語音訊息只有在下方開關開啟時才會保留。
 vault_title	暫存保管庫
+vault_capture_safe_mode	安全模式開啟時，保管庫會停止記錄。
+vault_capture_paused	「暫停所有變更」已暫停保管庫記錄。
 vault_hint	這裡的所有內容都是在訊息到達時保存在這支手機上的，並會在 72 小時後刪除。閱後即焚訊息永遠不會被保存。
 vault_view	開啟保管庫
 vault_clear	清空保管庫

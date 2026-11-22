@@ -66,6 +66,10 @@ final class VaultDiag {
     /** How a capture met what was already archived: inserted, merged, edited, already_present. */
     static void dedup(String result) { event("DEDUPLICATION_RESULT", "result=" + result); }
 
+    static void media(String stage, String status) {
+        event("MEDIA", "stage=" + stage + " status=" + status);
+    }
+
     /** A record's fields were sealed and are about to be written. */
     static void encryptSuccess() { event("ENCRYPT_SUCCESS", ""); }
 

@@ -25,11 +25,9 @@ internal const val VAULT_MEDIA_BRIDGE = "vault_media_bridge"
 private const val VIDEO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/VideoAttachmentData;"
 private const val AUDIO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/AudioAttachmentData;"
 
-private const val VAULT_GATE = "$SETTINGS->vaultWanted()Z"
-private const val VAULT_RESOLVED = "$SETTINGS->vaultMediaResolved(Ljava/lang/String;Ljava/lang/Object;)V"
-private const val VAULT_RESOLVED_PHOTOS = "$SETTINGS->vaultResolvedPhotos(Ljava/lang/String;Ljava/lang/Object;)V"
-private const val VAULT_RESOLVED_VIDEO = "$SETTINGS->vaultResolvedVideo(Ljava/lang/String;Ljava/lang/Object;)V"
-private const val VAULT_RESOLVED_AUDIO = "$SETTINGS->vaultResolvedAudio(Ljava/lang/String;Ljava/lang/Object;)V"
+private const val VAULT_RESOLVED_PHOTOS = "$SETTINGS->vaultResolvedPhotos(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V"
+private const val VAULT_RESOLVED_VIDEO = "$SETTINGS->vaultResolvedVideo(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V"
+private const val VAULT_RESOLVED_AUDIO = "$SETTINGS->vaultResolvedAudio(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V"
 
 /** The bridge's video resolution: (user session, message) to the message's video data. */
 private fun Method.isBridgeVideo(): Boolean =
@@ -60,13 +58,13 @@ internal fun findVaultMediaBridge(classes: Iterable<ClassDef>): List<Method> {
     return bridge.methods.filter { it.isBridgeResolution() }
 }
 
-/** The method is one of the bridge's three resolutions, with two local registers to work in. */
+/** The method is one of the bridge's three resolutions, with four local registers to work in. */
 internal fun MutableMethod.validateVaultMediaBridge() {
     if (!isBridgeResolution()) {
         throw PatchException("Messenger controls: ${hookId()} isn't a media bridge resolution")
     }
     val parameterWords = parameterTypes.sumOf { if (it == "J" || it == "D") 2 else 1 } + 1
-    if ((implementation?.registerCount ?: 0) < parameterWords + 2) {
+    if ((implementation?.registerCount ?: 0) < parameterWords + 4) {
         throw PatchException("Messenger controls: ${hookId()} has no room for the vault media hook")
     }
     if (messageLogContract == null) {
@@ -74,41 +72,10 @@ internal fun MutableMethod.validateVaultMediaBridge() {
     }
 }
 
-/**
- * At the resolution's start, behind the vault's own gate, the message's id is read off it the same way the
- * notification hook reads it, and the message goes over with it. The extension does the rest off this
- * thread's way and swallows its own failures, so a resolution is never slowed or broken by the vault.
- *
- * Each resolution is also met at its returns: what the resolver produced — the photo list, the video data,
- * the audio data — goes over with the same id. A message's own objects carry references in forms only
- * Messenger's parser accepts; the resolver's output is where the plain addresses Messenger itself was
- * about to load exist, above all in encrypted chats. The extension ignores a null result, so a resolution
- * that produced nothing hands over nothing.
- *
- * The hand-off's register discipline is the load-bearing part. Its two scratch registers are chosen per
- * return point from the method's own locals and are never the register the return itself reads, and
- * never the message's parameter register: the block only ever reads the result and the message, and
- * writes only its scratch pair, so the return that follows it hands back exactly what the stock code
- * put in its register. A fixed low pair breaks this the day a resolution returns in one of them — the
- * photo resolution returns its list in v0 at every return in the tested build, so writing the message
- * and its id into v0 on the way past replaced the list with the id string, and a caller trusting the
- * declared return type (the media prefetcher calls the list's iterator with no cast) died in native
- * code on a thread-pool thread.
- */
+/** Copies the message and result into dead locals at each return, leaving the stock return register intact. */
 internal fun MutableMethod.injectVaultMediaBridge() {
     validateVaultMediaBridge()
     val contract = messageLogContract!!
-    val message = if (isBridgeAudio()) "p1" else "p2"
-    addInstructionsWithLabels(0, """
-        invoke-static {}, $VAULT_GATE
-        move-result v0
-        if-eqz v0, :stock_behavior
-        move-object/from16 v0, $message
-        if-eqz v0, :stock_behavior
-        iget-object v1, v0, ${contract.messageIdField}
-        invoke-static {v1, v0}, $VAULT_RESOLVED
-    """.trimIndent(), ExternalLabel("stock_behavior", getInstruction(0)))
-
     val resolved = when {
         isBridgeVideo() -> VAULT_RESOLVED_VIDEO
         isBridgeAudio() -> VAULT_RESOLVED_AUDIO
@@ -120,33 +87,23 @@ internal fun MutableMethod.injectVaultMediaBridge() {
     val messageRegister = registers - if (isBridgeAudio()) 2 else 1
     val returns = implementation!!.instructions.withIndex()
         .filter { it.value.opcode == Opcode.RETURN_OBJECT }.map { it.index }
-    // Per return point, two scratch locals that are neither the register the return reads nor each
-    // other; the message's register is a parameter, so it is never among the locals to begin with.
-    // Chosen before any insertion, while the indices still name the stock instructions.
     val parameterWords = parameterTypes.sumOf { if (it == "J" || it == "D") 2 else 1 } + 1
-    val locals = registers - parameterWords
-    val blocks = returns.map { at ->
+    val localLimit = (registers - parameterWords).coerceAtMost(16)
+    for (at in returns.asReversed()) {
         val returned = (getInstruction(at) as OneRegisterInstruction).registerA
-        val scratch = (0 until locals).filter { it != returned }
-        if (scratch.size < 2) {
-            throw PatchException("Messenger controls: ${hookId()} has no two local registers to hand " +
-                "its result over with at its return $at")
+        val scratch = (0 until localLimit).filter { it != returned }.take(4)
+        if (scratch.size != 4) {
+            throw PatchException("Messenger controls: ${hookId()} has no four scratch locals at return $at")
         }
-        Triple(at, scratch[0], scratch[1])
-    }
-    // Last return first, so an insertion never shifts the index of a return still to be met. The result
-    // is copied into one scratch register, the message into the other, and the message's id replaces the
-    // message there — the register the return reads is never written, so the stock return below hands
-    // back exactly what the resolution produced.
-    for ((at, result, holder) in blocks.asReversed()) {
-        val returned = (getInstruction(at) as OneRegisterInstruction).registerA
+        val (result, holder, id, thread) = scratch
         val label = "vault_resolved_$at"
         addInstructionsWithLabels(at, """
             move-object/from16 v$result, v$returned
             move-object/from16 v$holder, v$messageRegister
             if-eqz v$holder, :$label
-            iget-object v$holder, v$holder, ${contract.messageIdField}
-            invoke-static {v$holder, v$result}, $resolved
+            iget-object v$id, v$holder, ${contract.messageIdField}
+            iget-object v$thread, v$holder, ${contract.threadKeyField}
+            invoke-static {v$id, v$thread, v$holder, v$result}, $resolved
         """.trimIndent(), ExternalLabel(label, getInstruction(at)))
     }
 }

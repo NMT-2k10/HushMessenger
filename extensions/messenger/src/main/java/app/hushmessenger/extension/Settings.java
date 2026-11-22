@@ -1411,57 +1411,50 @@ public final class Settings {
     /** The media bridge hook's gate: the vault on and usable. Checked before the message is even read. */
     public static boolean vaultWanted() { return wouldUse(Vault72h.KEY); }
 
-    /**
-     * A message whose media Messenger's thread view is resolving for display, handed over by the media bridge
-     * hook with the message's own id. That resolution is where the media's addresses exist — in encrypted
-     * chats the notification-time message carries none — so the vault scans the message again here and
-     * attaches what it finds to the entry the message's arrival already archived. View-once is refused here
-     * exactly as at arrival. Failures are the vault's own and never reach Messenger's thread.
-     */
-    public static void vaultMediaResolved(String id, Object message) {
-        if (id == null || id.isEmpty() || message == null || !wouldUse(Vault72h.KEY)) return;
-        try {
-            VaultDiag.hook("bridge_entry");
-            MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
-            if (read.ephemeral) {
-                VaultDiag.filtered("view_once");
-                return;
-            }
-            VaultDiag.extracted("bridge_entry", read.found == null ? null : read.found.kind,
-                read.found == null ? 0 : read.found.addresses.length);
-            Vault72h.attachFound(id, read.found, read.diag);
-        } catch (Throwable failure) {
-            hookFailedPrivately(Vault72h.KEY, "Can't take a message's resolved media for the vault", failure);
-        }
+    public static void vaultResolvedPhotos(String id, Object threadKey, Object message, Object data) {
+        vaultResolvedData("photo", id, threadKey, message, data);
     }
 
-    /**
-     * The media bridge hook's second hand-off: what Messenger's resolver itself produced for a message — the
-     * photo data, video data or audio data the thread view is about to show — handed over at the moment the
-     * resolution returns it, with the message's own id. A message's own objects carry references in forms
-     * only Messenger's parser accepts; the resolver's output carries the plain addresses Messenger was about
-     * to load, and those are what the vault attaches to the entry the message's arrival archived. View-once
-     * never reaches here: the bridge only sits on the regular media resolutions, and the vault's own scan
-     * refuses a view-once resource in what it is handed.
-     */
-    public static void vaultResolvedPhotos(String id, Object data) { vaultResolvedData("photo", id, data); }
+    public static void vaultResolvedVideo(String id, Object threadKey, Object message, Object data) {
+        vaultResolvedData("video", id, threadKey, message, data);
+    }
 
-    /** {@link #vaultResolvedPhotos} for a message's video data. */
-    public static void vaultResolvedVideo(String id, Object data) { vaultResolvedData("video", id, data); }
+    public static void vaultResolvedAudio(String id, Object threadKey, Object message, Object data) {
+        vaultResolvedData("audio", id, threadKey, message, data);
+    }
 
-    /** {@link #vaultResolvedPhotos} for a message's audio data. */
-    public static void vaultResolvedAudio(String id, Object data) { vaultResolvedData("audio", id, data); }
+    private static final java.util.concurrent.ThreadPoolExecutor VAULT_RESOLUTIONS =
+        new java.util.concurrent.ThreadPoolExecutor(0, 1, 30, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.ArrayBlockingQueue<>(32), task -> {
+                Thread thread = new Thread(task, "HushVaultResolution");
+                thread.setDaemon(true);
+                return thread;
+            });
 
-    private static void vaultResolvedData(String kind, String id, Object data) {
-        if (id == null || id.isEmpty() || data == null || !wouldUse(Vault72h.KEY)) return;
+    private static void vaultResolvedData(String kind, String id, Object threadKey, Object message, Object data) {
         try {
-            VaultDiag.hook("bridge_return");
-            MessageLogAttachment.Resolved resolved = MessageLogAttachment.resolved(kind, data);
-            VaultDiag.extracted("bridge_return", resolved.found == null ? null : resolved.found.kind,
-                resolved.found == null ? 0 : resolved.found.addresses.length);
-            Vault72h.attachFound(id, resolved.found, resolved.diag);
-        } catch (Throwable failure) {
-            hookFailedPrivately(Vault72h.KEY, "Can't take a message's resolved media for the vault", failure);
+            if (id == null || id.isEmpty() || message == null || data == null || !vaultWanted()) return;
+            VAULT_RESOLUTIONS.execute(() -> {
+                try {
+                    if (!vaultWanted()) return;
+                    VaultDiag.hook("bridge_return");
+                    MessageLogAttachment.VaultRead read = MessageLogAttachment.inspectForVault(message);
+                    if (read.ephemeral || !read.complete) {
+                        VaultDiag.filtered(read.ephemeral ? "view_once" : "unreadable_message");
+                        return;
+                    }
+                    String thread = threadKey == null ? "" : threadKey.toString();
+                    MessageLogAttachment.Resolved resolved = MessageLogAttachment.resolved(kind, data);
+                    VaultDiag.extracted("bridge_return", resolved.found == null ? null : resolved.found.kind,
+                        resolved.found == null ? 0 : resolved.found.addresses.length);
+                    if (resolved.found != null) Vault72h.attachFound(id, thread, resolved.found, resolved.diag);
+                    if (read.found != null) Vault72h.attachFound(id, thread, read.found, read.diag);
+                } catch (Throwable failure) {
+                    VaultDiag.media("extract", "bridge_error");
+                }
+            });
+        } catch (Throwable rejected) {
+            VaultDiag.media("extract", "queue_rejected");
         }
     }
 
