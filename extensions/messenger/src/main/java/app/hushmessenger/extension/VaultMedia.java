@@ -91,6 +91,20 @@ final class VaultMedia {
         return uri.buildUpon().scheme("content").build();
     }
 
+    /**
+     * Both stock 587 video paths use the same thread primary key and preview content token.
+     * An optional third segment is the provider's alternate token. Keep only a digest locally.
+     */
+    static String videoPosterKey(String address, String packageName) {
+        if (address == null || packageName == null) return "";
+        String authority = packageName + ".tam-attachment";
+        Uri uri = providerUri(address, authority);
+        if (uri == null || !authority.equals(uri.getEncodedAuthority())) return "";
+        java.util.List<String> path = uri.getPathSegments();
+        if (path.size() < 2 || !path.get(0).matches("-?[0-9]{1,20}") || path.get(1).isEmpty()) return "";
+        return MessageLog.digest(path.get(0) + '\u0001' + path.get(1));
+    }
+
     private static InputStream openProvider(String address) {
         return openProvider(Settings.appContext, address);
     }

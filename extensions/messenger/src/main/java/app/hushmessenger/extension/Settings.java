@@ -1403,6 +1403,7 @@ public final class Settings {
 
     private static boolean useNativeVaultIdentity(String id, MessageLogAttachment.VaultRead read) {
         if (id == null || read == null) return false;
+        if (read.found != null && !read.found.videoPosterKey.isEmpty()) return false;
         String kind = read.shapeKind == null && read.found != null ? read.found.kind : read.shapeKind;
         if ((!MessageLogAttachment.VIDEO.equals(kind) && !MessageLogAttachment.AUDIO.equals(kind))
             || !Vault72h.mediaWanted(kind)) return false;
@@ -1439,7 +1440,8 @@ public final class Settings {
             else Vault72h.record(text, thread, id, Vault72h.SOURCE_NOTIFICATION,
                 vaultRead == null ? null : vaultRead.found,
                 vaultRead == null ? null : vaultRead.shapeKind,
-                vaultRead == null ? "" : vaultRead.diag);
+                vaultRead == null ? "" : vaultRead.diag,
+                vaultRead == null ? 0 : vaultRead.sentAt);
         }
     }
 

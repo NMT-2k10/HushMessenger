@@ -93,14 +93,20 @@ final class MessageLogAttachment {
     static final class Found {
         final String[] addresses;
         final String kind;
+        final String videoPosterKey;
 
         Found(String address, String kind) {
             this(new String[] {address}, kind);
         }
 
         Found(String[] addresses, String kind) {
+            this(addresses, kind, "");
+        }
+
+        Found(String[] addresses, String kind, String videoPosterKey) {
             this.addresses = addresses;
             this.kind = kind;
+            this.videoPosterKey = videoPosterKey;
         }
 
         /** The one address, for a kind that only ever has one. */
@@ -184,17 +190,23 @@ final class MessageLogAttachment {
         final boolean ephemeral;
         final boolean complete;
         final String diag;
+        final long sentAt;
 
         VaultRead(Found found, String shapeKind, boolean ephemeral, String diag) {
             this(found, shapeKind, ephemeral, diag, true);
         }
 
         VaultRead(Found found, String shapeKind, boolean ephemeral, String diag, boolean complete) {
+            this(found, shapeKind, ephemeral, diag, complete, 0);
+        }
+
+        VaultRead(Found found, String shapeKind, boolean ephemeral, String diag, boolean complete, long sentAt) {
             this.complete = complete;
             this.found = found;
             this.shapeKind = shapeKind;
             this.ephemeral = ephemeral;
             this.diag = diag;
+            this.sentAt = sentAt;
         }
     }
 
@@ -299,6 +311,7 @@ final class MessageLogAttachment {
             String shape = null;
             Found found = null;
             int attachments = 0;
+            String posterKey = "";
             for (Field field : fields(message.getClass())) {
                 Object held = field.get(message);
                 if (!(held instanceof List)) continue;
@@ -330,6 +343,10 @@ final class MessageLogAttachment {
                     int[] imageNulls = {0};
                     List<String> imageAddresses = image == null ? null
                         : imageCandidates(image, imageForms, imageNulls);
+                    if (attachments == 1 && VIDEO.equals(typeShape) && imageAddresses != null
+                        && Settings.appContext != null) {
+                        posterKey = onePosterKey(imageAddresses, Settings.appContext.getPackageName());
+                    }
                     if (attachments == 1) {
                         diag.append("att=1");
                         if (typeName != null) diag.append(" typ=").append(typeName);
@@ -371,7 +388,14 @@ final class MessageLogAttachment {
                 if (shape == null) shape = resource.kind;
                 if (found == null) found = resource;
             }
-            return new VaultRead(found, shape, false, diag.toString());
+            long sentAt = 0;
+            if (attachments == 1 && found != null && VIDEO.equals(shape) && !posterKey.isEmpty()
+                && "com.facebook.messaging.model.messages.Message".equals(message.getClass().getName())) {
+                Object time = namedField(message, "A08");
+                sentAt = time instanceof Long ? (Long) time : 0;
+                if (sentAt > 0) found = new Found(found.addresses, VIDEO, posterKey);
+            }
+            return new VaultRead(found, shape, false, diag.toString(), true, sentAt);
         } catch (Throwable unreadable) {
             Settings.hookFailedPrivately(Vault72h.KEY, "Can't scan a message's media for the vault", unreadable);
             return new VaultRead(null, null, false, diag.toString(), false);
@@ -395,6 +419,7 @@ final class MessageLogAttachment {
         String type = model.getClass().getName();
         java.util.LinkedHashSet<String> addresses = new java.util.LinkedHashSet<>();
         String kind;
+        String posterKey = "";
         if ("X.AHT".equals(type)) {
             kind = AUDIO;
             addNativeSource(namedField(model, "A01"), packageName, addresses);
@@ -402,6 +427,8 @@ final class MessageLogAttachment {
             kind = VIDEO;
             Object attachment = namedField(model, "A00");
             if (attachment == null) return null;
+            Object poster = namedField(attachment, "A0C");
+            if (poster instanceof android.net.Uri) posterKey = VaultMedia.videoPosterKey(poster.toString(), packageName);
             // The progressive player sources are separate from the poster and from view-once video.
             Object sources = namedField(attachment, "A0F");
             if (!(sources instanceof List)) return null;
@@ -414,7 +441,18 @@ final class MessageLogAttachment {
         } else {
             return null;
         }
-        return addresses.isEmpty() ? null : new Found(addresses.toArray(new String[0]), kind);
+        return addresses.isEmpty() ? null : new Found(addresses.toArray(new String[0]), kind, posterKey);
+    }
+
+    private static String onePosterKey(List<String> addresses, String packageName) {
+        String key = "";
+        for (String address : addresses) {
+            String candidate = VaultMedia.videoPosterKey(address, packageName);
+            if (candidate.isEmpty()) continue;
+            if (!key.isEmpty() && !key.equals(candidate)) return "";
+            key = candidate;
+        }
+        return key;
     }
 
     static String nativePlaybackId(Object model) throws ReflectiveOperationException {

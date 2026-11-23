@@ -650,6 +650,31 @@ public class Vault72hTest {
         assertEquals("new-voice", all(T0 + 500).get(0).msgId);
     }
 
+    @Test public void videoNotificationAndPlaybackShareOneEntryAndEitherIdCanRecallIt() {
+        MessageLogAttachment.Found video = new MessageLogAttachment.Found(
+            new String[] {"https://example.test/video"}, MessageLogAttachment.VIDEO, "thread-and-poster-key");
+        Vault72h.recordNativePlaybackNow("render-id", video, T0, T0 + 100);
+        long stored = Vault72h.recordNow("A video", "thread-1", "notification-id",
+            Vault72h.SOURCE_NOTIFICATION, video, T0, 0, "An", "", T0 + 150, MessageLogAttachment.VIDEO, "");
+        assertEquals(1, all(T0 + 150).size());
+        assertEquals(stored, all(T0 + 150).get(0).rowId);
+        Vault72h.resetForTests();
+        assertTrue(Vault72h.markRecalledNow("notification-id"));
+        assertTrue(all(T0 + 150).get(0).recalled());
+    }
+
+    @Test public void aSharedPosterCannotMergeVideosSentAtDifferentTimes() {
+        MessageLogAttachment.Found video = new MessageLogAttachment.Found(
+            new String[] {"https://example.test/video"}, MessageLogAttachment.VIDEO, "thread-and-poster-key");
+        Vault72h.recordNow("A video", "thread-1", "notification-older", Vault72h.SOURCE_NOTIFICATION,
+            video, T0 - 1_000, 0, "", "", T0, MessageLogAttachment.VIDEO, "");
+        Vault72h.recordNativePlaybackNow("separate-video", video, T0, T0 + 100);
+        assertEquals(2, all(T0 + 100).size());
+        assertTrue(Vault72h.markRecalledNow("notification-older"));
+        assertFalse(all(T0 + 100).stream().filter(entry -> "separate-video".equals(entry.msgId))
+            .findFirst().get().recalled());
+    }
+
     @Test public void simultaneousDeliveriesStayWithTheirOwnMessages() throws Exception {
         Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
         byte[] first = picture(), second = alternatePicture();

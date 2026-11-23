@@ -474,6 +474,17 @@ public final class Vault72h {
             // Version 2 adds the per-entry media fingerprint. The archive itself is never dropped.
             if (oldVersion < 2) db.execSQL("ALTER TABLE entries ADD COLUMN diag TEXT NOT NULL DEFAULT ''");
         }
+
+        @Override public void onOpen(SQLiteDatabase db) {
+            super.onOpen(db);
+            // Additive so older Vault builds can open the same schema if rolled back.
+            db.execSQL("CREATE TABLE IF NOT EXISTS vault_video_identity ("
+                + "row_id INTEGER PRIMARY KEY, poster_key TEXT NOT NULL, sent_at INTEGER NOT NULL,"
+                + "notification_id TEXT NOT NULL DEFAULT '', playback_id TEXT NOT NULL DEFAULT '')");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_vault_video_identity"
+                + " ON vault_video_identity(poster_key,sent_at)");
+            pruneVideoIdentities(db);
+        }
     }
 
     private static SQLiteDatabase db(Context context) {
@@ -552,6 +563,11 @@ public final class Vault72h {
      */
     static void record(String text, String thread, String id, String source, MessageLogAttachment.Found found,
                        String shapeKind, String diag) {
+        record(text, thread, id, source, found, shapeKind, diag, 0);
+    }
+
+    static void record(String text, String thread, String id, String source, MessageLogAttachment.Found found,
+                       String shapeKind, String diag, long sentAt) {
         final String keptText = text, keptThread = thread, keptId = id, keptSource = source;
         final MessageLogAttachment.Found keptFound = found;
         final String keptShape = shapeKind, keptDiag = diag == null ? "" : diag;
@@ -559,7 +575,7 @@ public final class Vault72h {
             // The write waits a moment, as the message log's does, so the notification the sender's name is
             // read from has been posted by the time the entry is written.
             WRITER.schedule(() -> recordNow(keptText, keptThread, keptId, keptSource, keptFound,
-                0, 0, "", "", System.currentTimeMillis(), keptShape, keptDiag),
+                sentAt, 0, "", "", System.currentTimeMillis(), keptShape, keptDiag),
                 MessageLog.NAME_DELAY_MS, TimeUnit.MILLISECONDS);
         } catch (RuntimeException rejected) {
             Settings.hookFailedPrivately(KEY, "Can't queue a message for the vault", rejected);
@@ -654,15 +670,21 @@ public final class Vault72h {
             synchronized (LOCK) {
                 SQLiteDatabase db = db(context);
                 purgeLocked(context, db, now);
-                String dedup = !keptId.isEmpty() ? "m:" + keptId
+                boolean playback = SOURCE_ROW.equals(source) && found != null;
+                VideoIdentity link = videoIdentity(db, found, sentAt, keptId, now, playback);
+                String archiveId = link == null ? keptId : link.messageId;
+                String dedup = !archiveId.isEmpty() ? "m:" + archiveId
                     : "t:" + MessageLog.digest(keptThread + '\u0001' + words + '\u0001'
                         + ((sentAt > 0 ? sentAt : now) / LOOSE_MERGE_WINDOW_MS));
-                long rowId = mergeOrInsertLocked(db, keptId, dedup, !keptId.isEmpty(), keptThread, keptSender,
+                long rowId = mergeOrInsertLocked(db, archiveId, dedup, !archiveId.isEmpty(), keptThread, keptSender,
                     keptChat, senderId, kind, words, sentAt > 0 ? sentAt : now, now, source, found, attachment,
                     diag == null ? "" : diag, shaped != null);
                 if (rowId >= 0) {
-                    if (found != null) queueMediaLocked(context, db, rowId, kind, found);
-                    drainDeferredLocked(context, db, keptId, now);
+                    rememberVideoIdentity(db, rowId, found, sentAt, keptId, playback);
+                    if (found != null && (link == null || !link.recalled)) {
+                        queueMediaLocked(context, db, rowId, kind, found, playback);
+                    }
+                    drainDeferredLocked(context, db, archiveId, now);
                     Settings.activeAt.put(KEY, now);
                 }
                 return rowId;
@@ -805,6 +827,12 @@ public final class Vault72h {
             synchronized (LOCK) {
                 SQLiteDatabase db = db(context);
                 if (attachExactLocked(context, db, id, "", found, "", now, true) != 0) return;
+                VideoIdentity link = videoIdentity(db, found, sentAt, id, now, true);
+                if (link != null) {
+                    rememberVideoIdentity(db, link.rowId, found, sentAt, id, true);
+                    attachExactLocked(context, db, link.messageId, "", found, "", now, true);
+                    return;
+                }
                 // A notification without the server ID cannot establish this identity. The stock playback
                 // model carries the ID and send time, so a fresh arrival can create its own typed entry.
                 if (sentAt > 0 && now - sentAt <= ROW_ARRIVAL_WINDOW_MS && sentAt <= now + ROW_ARRIVAL_WINDOW_MS) {
@@ -817,6 +845,64 @@ public final class Vault72h {
         } catch (RuntimeException failure) {
             VaultDiag.media("associate", "database_error");
         }
+    }
+
+    private static final class VideoIdentity {
+        final long rowId;
+        final String messageId;
+        final boolean recalled;
+
+        VideoIdentity(long rowId, String messageId, boolean recalled) {
+            this.rowId = rowId;
+            this.messageId = messageId;
+            this.recalled = recalled;
+        }
+    }
+
+    private static boolean validVideoIdentity(MessageLogAttachment.Found found, long sentAt, String id) {
+        return found != null && MessageLogAttachment.VIDEO.equals(found.kind) && !found.videoPosterKey.isEmpty()
+            && sentAt > 0 && id != null && !id.isEmpty();
+    }
+
+    private static VideoIdentity videoIdentity(SQLiteDatabase db, MessageLogAttachment.Found found, long sentAt,
+                                               String id, long now, boolean playback) {
+        if (!validVideoIdentity(found, sentAt, id)) return null;
+        String own = playback ? "playback_id" : "notification_id";
+        String other = playback ? "notification_id" : "playback_id";
+        try (Cursor row = db.rawQuery("SELECT e.row_id,e.msg_id,e.status,v." + own + ",v." + other
+                + " FROM vault_video_identity v JOIN entries e ON e.row_id=v.row_id"
+                + " WHERE v.poster_key=? AND v.sent_at=? AND e.expires_at>? LIMIT 2",
+            new String[] {found.videoPosterKey, String.valueOf(sentAt), String.valueOf(now)})) {
+            if (!row.moveToFirst()) return null;
+            if (row.getCount() != 1) {
+                VaultDiag.media("associate", "ambiguous_video_identity");
+                return null;
+            }
+            String previous = row.getString(3);
+            if (row.getString(4).isEmpty() || (!previous.isEmpty() && !id.equals(previous))) return null;
+            VaultDiag.media("associate", "video_identity_matched");
+            return new VideoIdentity(row.getLong(0), row.getString(1), STATUS_RECALLED.equals(row.getString(2)));
+        }
+    }
+
+    private static void rememberVideoIdentity(SQLiteDatabase db, long rowId, MessageLogAttachment.Found found,
+                                              long sentAt, String id, boolean playback) {
+        if (!validVideoIdentity(found, sentAt, id)) return;
+        ContentValues initial = new ContentValues();
+        initial.put("row_id", rowId);
+        initial.put("poster_key", found.videoPosterKey);
+        initial.put("sent_at", sentAt);
+        db.insertWithOnConflict("vault_video_identity", null, initial, SQLiteDatabase.CONFLICT_IGNORE);
+        String column = playback ? "playback_id" : "notification_id";
+        ContentValues alias = new ContentValues();
+        alias.put(column, id);
+        db.update("vault_video_identity", alias,
+            "row_id=? AND poster_key=? AND sent_at=? AND (" + column + "='' OR " + column + "=?)",
+            new String[] {String.valueOf(rowId), found.videoPosterKey, String.valueOf(sentAt), id});
+    }
+
+    private static void pruneVideoIdentities(SQLiteDatabase db) {
+        db.execSQL("DELETE FROM vault_video_identity WHERE row_id NOT IN (SELECT row_id FROM entries)");
     }
 
     private static void enqueueResolved(String id, String thread, MessageLogAttachment.Found found, String diag,
@@ -1341,8 +1427,18 @@ public final class Vault72h {
             try {
                 ContentValues values = new ContentValues();
                 values.put("status", STATUS_RECALLED);
-                int changed = db(context).update("entries", values, "msg_id=? AND status!=?",
+                SQLiteDatabase db = db(context);
+                int changed = db.update("entries", values, "msg_id=? AND status!=?",
                     new String[] {id, STATUS_RECALLED});
+                if (changed == 0) {
+                    try (Cursor aliases = db.query("vault_video_identity", new String[] {"row_id"},
+                        "notification_id=? OR playback_id=?", new String[] {id, id}, null, null, null, "2")) {
+                        if (aliases.moveToFirst() && aliases.getCount() == 1) {
+                            changed = db.update("entries", values, "row_id=? AND status!=?",
+                                new String[] {String.valueOf(aliases.getLong(0)), STATUS_RECALLED});
+                        }
+                    }
+                }
                 return changed > 0;
             } catch (Throwable failure) {
                 Settings.hookFailedPrivately(KEY, "Can't mark a recalled message in the vault", failure);
@@ -1492,6 +1588,7 @@ public final class Vault72h {
             while (rows.moveToNext()) if (rows.getString(0) != null && !rows.getString(0).isEmpty()) media.add(rows.getString(0));
         } finally { rows.close(); }
         int removed = db.delete("entries", "expires_at<=?", new String[] {String.valueOf(now)});
+        if (removed > 0) pruneVideoIdentities(db);
         for (String name : media) {
             deletePlaybackFiles(context, name);
             File file = mediaFile(context, name);
@@ -1517,7 +1614,9 @@ public final class Vault72h {
             DEFERRED_MEDIA.clear();
             deletePlaybackFiles(context, "");
             try {
-                db(context).delete("entries", null, null);
+                SQLiteDatabase db = db(context);
+                db.delete("entries", null, null);
+                pruneVideoIdentities(db);
             } catch (Throwable failure) {
                 cleared = false;
                 Settings.hookFailedPrivately(KEY, "Can't clear the vault", failure);
