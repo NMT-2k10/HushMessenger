@@ -1378,6 +1378,40 @@ public final class Settings {
 
     /** The same message object, scanned for the vault: its own keep switches decide, and view-once is never taken. */
     private static final ThreadLocal<MessageLogAttachment.VaultRead> INCOMING_VAULT_MEDIA = new ThreadLocal<>();
+    private static final java.util.LinkedHashMap<String, Long> SYNTHETIC_VAULT_NOTIFICATIONS =
+        new java.util.LinkedHashMap<>();
+
+    /** A stock E2EE notification may use its notification ID in a temporary Message with no server ID. */
+    public static void vaultNotificationIdentity(Object payload) {
+        try {
+            if (!vaultWanted() || payload == null || !"X.ABZ".equals(payload.getClass().getName())
+                || MessageLogAttachment.namedField(payload, "A0B") != null) return;
+            Object notification = MessageLogAttachment.namedField(payload, "A0D");
+            if (!(notification instanceof String) || ((String) notification).isEmpty()) return;
+            long now = android.os.SystemClock.elapsedRealtime();
+            synchronized (SYNTHETIC_VAULT_NOTIFICATIONS) {
+                SYNTHETIC_VAULT_NOTIFICATIONS.values().removeIf(at -> now - at > 10_000);
+                SYNTHETIC_VAULT_NOTIFICATIONS.put(MessageLog.digest((String) notification), now);
+                if (SYNTHETIC_VAULT_NOTIFICATIONS.size() > 64) {
+                    SYNTHETIC_VAULT_NOTIFICATIONS.remove(SYNTHETIC_VAULT_NOTIFICATIONS.keySet().iterator().next());
+                }
+            }
+        } catch (Throwable ignored) {
+            VaultDiag.media("extract", "notification_identity_unavailable");
+        }
+    }
+
+    private static boolean useNativeVaultIdentity(String id, MessageLogAttachment.VaultRead read) {
+        if (id == null || read == null) return false;
+        String kind = read.shapeKind == null && read.found != null ? read.found.kind : read.shapeKind;
+        if ((!MessageLogAttachment.VIDEO.equals(kind) && !MessageLogAttachment.AUDIO.equals(kind))
+            || !Vault72h.mediaWanted(kind)) return false;
+        synchronized (SYNTHETIC_VAULT_NOTIFICATIONS) {
+            long now = android.os.SystemClock.elapsedRealtime();
+            SYNTHETIC_VAULT_NOTIFICATIONS.values().removeIf(at -> now - at > 10_000);
+            return SYNTHETIC_VAULT_NOTIFICATIONS.containsKey(MessageLog.digest(id));
+        }
+    }
 
     static MessageLogAttachment.VaultRead takeIncomingVaultMedia() {
         MessageLogAttachment.VaultRead read = INCOMING_VAULT_MEDIA.get();
@@ -1401,6 +1435,7 @@ public final class Settings {
             VaultDiag.featureEnabled();
             VaultDiag.hook("notification");
             if (vaultRead != null && vaultRead.ephemeral) VaultDiag.filtered("view_once");
+            else if (useNativeVaultIdentity(id, vaultRead)) VaultDiag.filtered("synthetic_media_notification");
             else Vault72h.record(text, thread, id, Vault72h.SOURCE_NOTIFICATION,
                 vaultRead == null ? null : vaultRead.found,
                 vaultRead == null ? null : vaultRead.shapeKind,
@@ -1430,6 +1465,32 @@ public final class Settings {
                 thread.setDaemon(true);
                 return thread;
             });
+
+    /** Messenger's normal 587 E2EE playback model, after it assigns the exact message ID. */
+    public static void vaultNativePlayback(Object model) {
+        try {
+            if (model == null || appContext == null || !vaultWanted()) return;
+            String modelType = model.getClass().getName();
+            if (!"X.AHT".equals(modelType) && !"X.AZy".equals(modelType)) return;
+            VAULT_RESOLUTIONS.execute(() -> {
+                try {
+                    if (!vaultWanted()) return;
+                    String id = MessageLogAttachment.nativePlaybackId(model);
+                    MessageLogAttachment.Found found =
+                        MessageLogAttachment.nativePlayback(model, appContext.getPackageName());
+                    VaultDiag.extracted("native_playback", found == null ? null : found.kind,
+                        found == null ? 0 : found.addresses.length);
+                    if (id != null && found != null) {
+                        Vault72h.attachNativePlayback(id, found, MessageLogAttachment.nativePlaybackTimestamp(model));
+                    }
+                } catch (Throwable unreadable) {
+                    VaultDiag.media("extract", "native_playback_error");
+                }
+            });
+        } catch (Throwable rejected) {
+            VaultDiag.media("extract", "queue_rejected");
+        }
+    }
 
     private static void vaultResolvedData(String kind, String id, Object threadKey, Object message, Object data) {
         try {

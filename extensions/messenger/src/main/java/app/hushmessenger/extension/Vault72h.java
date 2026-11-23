@@ -522,13 +522,16 @@ public final class Vault72h {
         final String id, thread, diag;
         final MessageLogAttachment.Found found;
         final long expiresAt;
+        final boolean nativePlayback;
 
-        DeferredMedia(String id, String thread, MessageLogAttachment.Found found, String diag, long expiresAt) {
+        DeferredMedia(String id, String thread, MessageLogAttachment.Found found, String diag, long expiresAt,
+                      boolean nativePlayback) {
             this.id = id;
             this.thread = thread;
             this.found = found;
             this.diag = diag;
             this.expiresAt = expiresAt;
+            this.nativePlayback = nativePlayback;
         }
     }
 
@@ -780,10 +783,50 @@ public final class Vault72h {
 
     /** Delivers resolved metadata on the writer, after the hook has checked the message. */
     static void attachFound(String id, String thread, MessageLogAttachment.Found found, String diag) {
+        enqueueResolved(id, thread, found, diag, false);
+    }
+
+    static void attachNativePlayback(String id, MessageLogAttachment.Found found, long sentAt) {
+        if (id.isEmpty() || id.length() > MAX_ID_CHARS) return;
+        try {
+            WRITER.execute(() -> {
+                if (Settings.vaultWanted()) recordNativePlaybackNow(id, found, sentAt, System.currentTimeMillis());
+            });
+        } catch (RuntimeException rejected) {
+            VaultDiag.media("associate", "queue_rejected");
+        }
+    }
+
+    static void recordNativePlaybackNow(String id, MessageLogAttachment.Found found, long sentAt, long now) {
+        Context context = Settings.appContext;
+        if (context == null || id == null || id.isEmpty() || id.length() > MAX_ID_CHARS || found == null
+            || (!MessageLogAttachment.VIDEO.equals(found.kind) && !MessageLogAttachment.AUDIO.equals(found.kind))) return;
+        try {
+            synchronized (LOCK) {
+                SQLiteDatabase db = db(context);
+                if (attachExactLocked(context, db, id, "", found, "", now, true) != 0) return;
+                // A notification without the server ID cannot establish this identity. The stock playback
+                // model carries the ID and send time, so a fresh arrival can create its own typed entry.
+                if (sentAt > 0 && now - sentAt <= ROW_ARRIVAL_WINDOW_MS && sentAt <= now + ROW_ARRIVAL_WINDOW_MS) {
+                    recordNow(null, "", id, SOURCE_ROW, found, sentAt, 0, "", "", now, found.kind, "");
+                    VaultDiag.media("associate", "native_playback_arrival");
+                } else {
+                    deferLocked(id, "", found, "", now, true);
+                }
+            }
+        } catch (RuntimeException failure) {
+            VaultDiag.media("associate", "database_error");
+        }
+    }
+
+    private static void enqueueResolved(String id, String thread, MessageLogAttachment.Found found, String diag,
+                                        boolean nativePlayback) {
         if (id == null || id.isEmpty()) return;
         try {
             WRITER.execute(() -> {
-                if (Settings.vaultWanted()) attachFoundNow(id, thread, found, diag, System.currentTimeMillis());
+                if (Settings.vaultWanted()) {
+                    attachFoundNow(id, thread, found, diag, System.currentTimeMillis(), nativePlayback);
+                }
             });
         } catch (RuntimeException rejected) {
             VaultDiag.media("associate", "queue_rejected");
@@ -795,6 +838,11 @@ public final class Vault72h {
     }
 
     static boolean attachFoundNow(String id, String thread, MessageLogAttachment.Found found, String diag, long now) {
+        return attachFoundNow(id, thread, found, diag, now, false);
+    }
+
+    static boolean attachFoundNow(String id, String thread, MessageLogAttachment.Found found, String diag,
+                                  long now, boolean nativePlayback) {
         Context context = Settings.appContext;
         if (context == null || id == null || id.isEmpty() || id.length() > MAX_ID_CHARS) return false;
         if (found != null && MessageLogAttachment.EPHEMERAL.equals(found.kind)) return false;
@@ -802,8 +850,8 @@ public final class Vault72h {
         try {
             synchronized (LOCK) {
                 SQLiteDatabase db = db(context);
-                int match = attachExactLocked(context, db, id, keptThread, found, diag, now);
-                if (match == 0 && found != null) deferLocked(id, keptThread, found, diag, now);
+                int match = attachExactLocked(context, db, id, keptThread, found, diag, now, nativePlayback);
+                if (match == 0 && found != null) deferLocked(id, keptThread, found, diag, now, nativePlayback);
                 return match == 1;
             }
         } catch (Exception failure) {
@@ -814,8 +862,9 @@ public final class Vault72h {
 
     /** Returns 0 if a row can still arrive, -1 for conflicting identities, or 1 for a match. */
     private static int attachExactLocked(Context context, SQLiteDatabase db, String id, String thread,
-                                         MessageLogAttachment.Found found, String diag, long now) {
-        try (Cursor row = db.query("entries", new String[] {"row_id", "thread", "kind", "diag"},
+                                         MessageLogAttachment.Found found, String diag, long now,
+                                         boolean nativePlayback) {
+        try (Cursor row = db.query("entries", new String[] {"row_id", "thread", "kind", "diag", "status"},
             "msg_id=? AND expires_at>?", new String[] {id, String.valueOf(now)}, null, null, null, "2")) {
             if (!row.moveToFirst()) return 0;
             if (row.getCount() != 1) {
@@ -828,24 +877,38 @@ public final class Vault72h {
                 return -1;
             }
             long rowId = row.getLong(0);
+            if (nativePlayback && !acceptsNativePlayback(row.getString(2), row.getString(4), found)) {
+                VaultDiag.media("associate", "native_playback_ineligible");
+                return -1;
+            }
             if (diag != null && !diag.isEmpty() && !diag.equals(row.getString(3))) {
                 ContentValues values = new ContentValues();
                 values.put("diag", diag);
                 db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
             }
-            if (found != null) queueMediaLocked(context, db, rowId, row.getString(2), found);
-            VaultDiag.media("associate", "matched");
+            if (found != null) queueMediaLocked(context, db, rowId, row.getString(2), found, nativePlayback);
+            VaultDiag.media("associate", nativePlayback ? "native_playback_matched" : "matched");
             return 1;
         }
     }
 
-    private static void deferLocked(String id, String thread, MessageLogAttachment.Found found, String diag, long now) {
+    private static boolean acceptsNativePlayback(String kind, String status, MessageLogAttachment.Found found) {
+        if (found == null || STATUS_RECALLED.equals(status)) return false;
+        String expected = kindForShape(found.kind);
+        return (KIND_VIDEO.equals(expected) || KIND_AUDIO.equals(expected))
+            && (expected.equals(kind) || KIND_ATTACHMENT.equals(kind)
+                || (KIND_VIDEO.equals(expected) && KIND_PHOTO.equals(kind)));
+    }
+
+    private static void deferLocked(String id, String thread, MessageLogAttachment.Found found, String diag, long now,
+                                    boolean nativePlayback) {
         DEFERRED_MEDIA.removeIf(held -> held.expiresAt <= now);
         LinkedHashSet<String> addresses = new LinkedHashSet<>();
         long expiresAt = now + RESOLUTION_WAIT_MS;
         for (Iterator<DeferredMedia> items = DEFERRED_MEDIA.iterator(); items.hasNext();) {
             DeferredMedia held = items.next();
-            if (!held.id.equals(id) || !held.thread.equals(thread) || !held.found.kind.equals(found.kind)) continue;
+            if (held.nativePlayback != nativePlayback || !held.id.equals(id) || !held.thread.equals(thread)
+                || !held.found.kind.equals(found.kind)) continue;
             if (Arrays.equals(held.found.addresses, found.addresses)) return;
             expiresAt = held.expiresAt;
             addresses.addAll(Arrays.asList(held.found.addresses));
@@ -859,7 +922,8 @@ public final class Vault72h {
         if (addresses.isEmpty()) return;
         if (DEFERRED_MEDIA.size() == MAX_DEFERRED_MEDIA) DEFERRED_MEDIA.remove(0);
         DEFERRED_MEDIA.add(new DeferredMedia(id, thread,
-            new MessageLogAttachment.Found(addresses.toArray(new String[0]), found.kind), diag, expiresAt));
+            new MessageLogAttachment.Found(addresses.toArray(new String[0]), found.kind), diag, expiresAt,
+            nativePlayback));
         VaultDiag.media("associate", "waiting_for_insert");
         if (!deferredCleanupScheduled) {
             deferredCleanupScheduled = true;
@@ -877,7 +941,7 @@ public final class Vault72h {
         for (Iterator<DeferredMedia> items = DEFERRED_MEDIA.iterator(); items.hasNext();) {
             DeferredMedia held = items.next();
             if (held.expiresAt <= now || (held.id.equals(id)
-                && attachExactLocked(context, db, id, held.thread, held.found, held.diag, now) != 0)) {
+                && attachExactLocked(context, db, id, held.thread, held.found, held.diag, now, held.nativePlayback) != 0)) {
                 items.remove();
             }
         }
@@ -885,8 +949,12 @@ public final class Vault72h {
 
     private static void queueMediaLocked(Context context, SQLiteDatabase db, long rowId, String declared,
                                          MessageLogAttachment.Found found) {
+        queueMediaLocked(context, db, rowId, declared, found, false);
+    }
+
+    private static void queueMediaLocked(Context context, SQLiteDatabase db, long rowId, String declared,
+                                         MessageLogAttachment.Found found, boolean nativePlayback) {
         String current = mediaStatusLocked(db, rowId);
-        if (MEDIA_STORED.equals(current)) return;
         String kind = found.kind;
         if (MessageLogAttachment.PHOTO.equals(kind)) {
             if (KIND_VIDEO.equals(declared)) kind = MessageLogAttachment.VIDEO;
@@ -894,12 +962,16 @@ public final class Vault72h {
             if (KIND_STICKER.equals(declared)) kind = MessageLogAttachment.STICKER;
             if (KIND_GIF.equals(declared)) kind = MessageLogAttachment.GIF;
         }
+        boolean stored = MEDIA_STORED.equals(current);
+        if (stored && (!nativePlayback || !hasStoredPosterLocked(db, rowId))) return;
         if (!mediaWanted(kind)) {
-            if (!MEDIA_PENDING.equals(current)) updateMediaStatusLocked(db, rowId, MEDIA_NOT_KEPT, "", kind, 0);
+            if (!stored && !MEDIA_PENDING.equals(current)) {
+                updateMediaStatusLocked(db, rowId, MEDIA_NOT_KEPT, "", kind, 0);
+            }
             return;
         }
-        updateMediaStatusLocked(db, rowId, MEDIA_PENDING, "", kind, 0);
-        fetchMedia(context, rowId, new MessageLogAttachment.Found(found.addresses, kind));
+        if (!stored) updateMediaStatusLocked(db, rowId, MEDIA_PENDING, "", kind, 0);
+        fetchMedia(context, rowId, new MessageLogAttachment.Found(found.addresses, kind), nativePlayback);
     }
 
     /** Whether the vault's own keep switch for this media kind is on. The message log's switches don't decide. */
@@ -1100,13 +1172,28 @@ public final class Vault72h {
         db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
     }
 
-    private static void fetchMedia(Context context, long rowId, MessageLogAttachment.Found found) {
-        String job = rowId + ":" + MessageLog.digest(found.kind + Arrays.toString(found.addresses));
+    private static boolean hasStoredPosterLocked(SQLiteDatabase db, long rowId) {
+        try (Cursor row = db.query("entries", new String[] {"media_kind", "status"}, "row_id=?",
+            new String[] {String.valueOf(rowId)}, null, null, null, "1")) {
+            if (!row.moveToFirst() || STATUS_RECALLED.equals(row.getString(1))) return false;
+            String mime = row.getString(0);
+            return mime != null && mime.startsWith("image/");
+        }
+    }
+
+    private static boolean mayPersistLocked(SQLiteDatabase db, long rowId, boolean nativePlayback) {
+        return liveEntryLocked(db, rowId) && (!MEDIA_STORED.equals(mediaStatusLocked(db, rowId))
+            || (nativePlayback && hasStoredPosterLocked(db, rowId)));
+    }
+
+    private static void fetchMedia(Context context, long rowId, MessageLogAttachment.Found found,
+                                   boolean nativePlayback) {
+        String job = rowId + ":" + MessageLog.digest(nativePlayback + found.kind + Arrays.toString(found.addresses));
         if (!IN_FLIGHT.add(job)) return;
         try {
             MEDIA.execute(() -> {
                 try {
-                    persistMedia(context, rowId, found);
+                    persistMedia(context, rowId, found, nativePlayback);
                 } catch (Exception failure) {
                     VaultDiag.media("persist", "database_error");
                 } finally {
@@ -1115,7 +1202,9 @@ public final class Vault72h {
             });
         } catch (RuntimeException rejected) {
             IN_FLIGHT.remove(job);
-            updateMediaStatusLocked(db(context), rowId, MEDIA_FAILED, "", found.kind, 0);
+            if (!MEDIA_STORED.equals(mediaStatusLocked(db(context), rowId))) {
+                updateMediaStatusLocked(db(context), rowId, MEDIA_FAILED, "", found.kind, 0);
+            }
             VaultDiag.media("fetch", "queue_rejected");
         }
     }
@@ -1126,14 +1215,14 @@ public final class Vault72h {
             || CrashGuard.isSafeMode();
     }
 
-    private static void persistMedia(Context context, long rowId, MessageLogAttachment.Found found) {
+    private static void persistMedia(Context context, long rowId, MessageLogAttachment.Found found,
+                                     boolean nativePlayback) {
         synchronized (LOCK) {
-            SQLiteDatabase db = db(context);
-            if (!liveEntryLocked(db, rowId) || MEDIA_STORED.equals(mediaStatusLocked(db, rowId))) return;
+            if (!mayPersistLocked(db(context), rowId, nativePlayback)) return;
         }
 
         File dir = new File(context.getFilesDir(), MEDIA_DIR);
-        File target = new File(dir, MessageLog.digest("vault-row:" + rowId));
+        File target = new File(dir, MessageLog.digest("vault-row:" + rowId + (nativePlayback ? ":" + found.kind : "")));
         List<String> candidates = VaultMedia.ordered(found);
         String result = MEDIA_UNAVAILABLE;
         for (String address : candidates) {
@@ -1143,6 +1232,7 @@ public final class Vault72h {
             }
             File part = null;
             try {
+                VaultDiag.media("fetch", (nativePlayback ? "native_" : "resolved_") + found.kind);
                 VaultMediaFormat format;
                 String actualKind;
                 try (InputStream in = VaultMedia.open(address)) {
@@ -1170,10 +1260,17 @@ public final class Vault72h {
                 VaultDiag.media("encryption", "sealed");
                 synchronized (LOCK) {
                     SQLiteDatabase db = db(context);
-                    if (!liveEntryLocked(db, rowId) || MEDIA_STORED.equals(mediaStatusLocked(db, rowId))) return;
+                    if (!mayPersistLocked(db, rowId, nativePlayback)) return;
                     if (captureBlocked() || !mediaWanted(actualKind)) {
                         result = MEDIA_NOT_KEPT;
                         break;
+                    }
+                    String oldName = "";
+                    if (nativePlayback) {
+                        try (Cursor row = db.query("entries", new String[] {"media_name"}, "row_id=?",
+                            new String[] {String.valueOf(rowId)}, null, null, null, "1")) {
+                            if (row.moveToFirst()) oldName = row.getString(0);
+                        }
                     }
                     if (!part.renameTo(target)) throw new IOException("publish failed");
                     try {
@@ -1189,6 +1286,9 @@ public final class Vault72h {
                     } catch (Exception failure) {
                         target.delete();
                         throw failure;
+                    }
+                    if (oldName != null && oldName.matches("[0-9a-f]+") && !oldName.equals(target.getName())) {
+                        new File(dir, oldName).delete();
                     }
                 }
                 VaultDiag.media("persist", "stored");

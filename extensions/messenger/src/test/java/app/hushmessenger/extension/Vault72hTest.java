@@ -585,6 +585,71 @@ public class Vault72hTest {
         assertEquals(Vault72h.MEDIA_NO_ADDRESS, all(T0).get(0).mediaStatus);
     }
 
+    @Test public void nativePlaybackRequiresAnActiveEntryOfTheSameMediaKind() {
+        MessageLogAttachment.Found audio = new MessageLogAttachment.Found(
+            "content://test.tam-attachment/10/voice", MessageLogAttachment.AUDIO);
+        assertTrue(mediaArrival("photo", "thread-1", T0) > 0);
+        assertFalse(Vault72h.attachFoundNow("photo", "", audio, "", T0, true));
+        assertEquals(Vault72h.MEDIA_NO_ADDRESS, all(T0).get(0).mediaStatus);
+
+        assertTrue(Vault72h.recordNow(null, "thread-1", "recalled", Vault72h.SOURCE_NOTIFICATION,
+            null, 0, 0, "", "", T0, MessageLogAttachment.AUDIO, "") > 0);
+        assertTrue(Vault72h.markRecalledNow("recalled"));
+        assertFalse(Vault72h.attachFoundNow("recalled", "", audio, "", T0, true));
+
+        assertFalse(Vault72h.attachFoundNow("early-voice", "", audio, "", T0, true));
+        assertTrue(Vault72h.recordNow(null, "thread-1", "early-voice", Vault72h.SOURCE_NOTIFICATION,
+            null, 0, 0, "", "", T0 + 2_000, MessageLogAttachment.AUDIO, "") > 0);
+        Vault72h.Entry voice = all(T0 + 2_000).stream()
+            .filter(entry -> "early-voice".equals(entry.msgId)).findFirst().get();
+        assertEquals(Vault72h.MEDIA_NOT_KEPT, voice.mediaStatus);
+        assertTrue(Vault72h.attachFoundNow("early-voice", "", audio, "", T0 + 2_000, true));
+    }
+
+    @Test public void validatedNativeVideoReplacesAnAlreadyStoredPoster() throws Exception {
+        Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true)
+            .putBoolean(Vault72h.KEEP_VIDEOS, true).commit();
+        byte[] poster = picture();
+        byte[] video = java.nio.ByteBuffer.allocate(40)
+            .putInt(16).putInt(0x66747970).putInt(0x69736f6d).putInt(0)
+            .putInt(12).putInt(0x6d6f6f76).putInt(123)
+            .putInt(12).putInt(0x6d646174).putInt(456).array();
+        VaultMedia.opener = address -> new ByteArrayInputStream(address.endsWith("video") ? video : poster);
+        String id = "video-with-poster";
+        assertTrue(mediaArrival(id, "thread-1", T0) > 0);
+        assertTrue(Vault72h.attachFoundNow(id, "thread-1", photo("poster"), "", T0));
+        Vault72h.Entry original = awaitMedia(T0);
+        assertEquals(Vault72h.KIND_PHOTO, original.kind);
+        assertArrayEquals(poster, Vault72h.openMedia(context, original));
+
+        MessageLogAttachment.Found full = new MessageLogAttachment.Found(
+            "https://example.test/video", MessageLogAttachment.VIDEO);
+        assertTrue(Vault72h.attachFoundNow(id, "", full, "", T0, true));
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        Vault72h.Entry playable = all(T0).get(0);
+        while (!Vault72h.KIND_VIDEO.equals(playable.kind) && System.nanoTime() < deadline) {
+            Thread.sleep(25);
+            playable = all(T0).get(0);
+        }
+        assertEquals(original.rowId, playable.rowId);
+        assertEquals(original.expiresAt, playable.expiresAt);
+        assertEquals(Vault72h.KIND_VIDEO, playable.kind);
+        assertArrayEquals(video, Vault72h.openMedia(context, playable));
+        assertFalse(new File(new File(context.getFilesDir(), Vault72h.MEDIA_DIR), original.mediaName).exists());
+    }
+
+    @Test public void onlyFreshNativePlaybackCanCreateAnEntryAndExactIdDeduplicatesIt() {
+        MessageLogAttachment.Found audio = new MessageLogAttachment.Found(
+            "content://test.tam-attachment/10/voice", MessageLogAttachment.AUDIO);
+        Vault72h.recordNativePlaybackNow("old-voice", audio, T0 - Vault72h.ROW_ARRIVAL_WINDOW_MS - 1, T0);
+        assertTrue(all(T0).isEmpty());
+        Vault72h.recordNativePlaybackNow("new-voice", audio, T0 - 1000, T0);
+        Vault72h.recordNativePlaybackNow("new-voice", audio, T0 - 1000, T0 + 500);
+        assertEquals(1, all(T0 + 500).size());
+        assertEquals(Vault72h.KIND_AUDIO, all(T0 + 500).get(0).kind);
+        assertEquals("new-voice", all(T0 + 500).get(0).msgId);
+    }
+
     @Test public void simultaneousDeliveriesStayWithTheirOwnMessages() throws Exception {
         Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
         byte[] first = picture(), second = alternatePicture();

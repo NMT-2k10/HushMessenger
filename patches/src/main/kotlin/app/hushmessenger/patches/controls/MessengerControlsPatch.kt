@@ -559,7 +559,21 @@ private fun controlPatch(key: String, title: String, summary: String, group: Str
                 val helpers = rows.map { mutableClassDefBy(it) to unsentRowHelper(it) }
                     .filter { (row, _) -> row.methods.none { it.name == UNSENT_ROW_HELPER } }
                 for ((row, _) in helpers) row.checkUnsentRowHelper()
+                val playback = if (key == "temporary_vault") {
+                    classDefByOrNull(VAULT_NATIVE_PLAYBACK_CLASS)?.methods?.singleOrNull { it.isNativePlaybackBuilder() }
+                        ?.let { expected ->
+                            mutableClassDefBy(expected.definingClass).methods.single { it.hookId() == expected.hookId() }
+                        }?.also { it.validateVaultMediaBridge() }
+                } else null
+                val notification = if (playback != null) {
+                    classDefByOrNull(VAULT_NATIVE_NOTIFICATION_CLASS)?.methods
+                        ?.singleOrNull { it.isNativeNotificationBuilder() }?.let { expected ->
+                            mutableClassDefBy(expected.definingClass).methods.single { it.hookId() == expected.hookId() }
+                        }
+                } else null
                 injectControl(key, methods)
+                playback?.injectVaultMediaBridge()
+                notification?.injectVaultNotificationIdentity()
                 for ((row, helper) in helpers) row.addUnsentRowHelper(helper)
             } else if (key == MEDIA_CAPTION) {
                 // Built before the first edit, so a compose fragment that can't take the helper stops the patch with

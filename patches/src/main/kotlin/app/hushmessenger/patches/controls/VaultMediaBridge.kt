@@ -1,6 +1,7 @@
 package app.hushmessenger.patches.controls
 
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
+import app.morphe.patcher.extensions.InstructionExtensions.addInstruction
 import app.morphe.patcher.extensions.InstructionExtensions.getInstruction
 import app.morphe.patcher.patch.PatchException
 import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod
@@ -10,6 +11,7 @@ import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.ClassDef
 import com.android.tools.smali.dexlib2.iface.Method
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 
 /**
  * The Temporary Vault's second set of eyes on a message's media. A message's notification-time object
@@ -21,6 +23,8 @@ import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
  * carrying view-once data on this surface exactly as at arrival.
  */
 internal const val VAULT_MEDIA_BRIDGE = "vault_media_bridge"
+internal const val VAULT_NATIVE_PLAYBACK_CLASS = "LX/5X2;"
+internal const val VAULT_NATIVE_NOTIFICATION_CLASS = "LX/ABi;"
 
 private const val VIDEO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/VideoAttachmentData;"
 private const val AUDIO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/AudioAttachmentData;"
@@ -28,6 +32,37 @@ private const val AUDIO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/A
 private const val VAULT_RESOLVED_PHOTOS = "$SETTINGS->vaultResolvedPhotos(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V"
 private const val VAULT_RESOLVED_VIDEO = "$SETTINGS->vaultResolvedVideo(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V"
 private const val VAULT_RESOLVED_AUDIO = "$SETTINGS->vaultResolvedAudio(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V"
+private const val NATIVE_MEDIA_ID = "LX/FU2;->A08:Ljava/lang/String;"
+private const val VAULT_NATIVE_PLAYBACK = "$SETTINGS->vaultNativePlayback(Ljava/lang/Object;)V"
+private const val VAULT_NOTIFICATION_IDENTITY = "$SETTINGS->vaultNotificationIdentity(Ljava/lang/Object;)V"
+
+// Messenger 587 assigns the server message ID to its thread-view model after resolving the attachment.
+internal fun Method.isNativePlaybackBuilder(): Boolean =
+    definingClass == VAULT_NATIVE_PLAYBACK_CLASS && !AccessFlags.STATIC.isSet(accessFlags) && returnType == "V" &&
+        parameterTypes.map(CharSequence::toString) ==
+            listOf(FB_USER_SESSION, "LX/6fH;", "LX/6c5;", "LX/D4c;", "LX/50v;", "LX/FU2;", "I", "I") &&
+        implementation?.instructions?.any {
+            it.opcode == Opcode.IPUT_OBJECT && (it as ReferenceInstruction).reference.toString() == NATIVE_MEDIA_ID
+        } == true
+
+internal fun Method.isNativeNotificationBuilder(): Boolean =
+    definingClass == VAULT_NATIVE_NOTIFICATION_CLASS && returnType == MESSAGE &&
+        parameterTypes.map(CharSequence::toString) ==
+            listOf("Lcom/facebook/messaging/model/messages/ParticipantInfo;", "LX/ABZ;") &&
+        implementation?.registerCount == 44 &&
+        implementation?.instructions?.any {
+            it.opcode == Opcode.IGET_OBJECT &&
+                (it as ReferenceInstruction).reference.toString() == "LX/ABZ;->A0D:Ljava/lang/String;"
+        } == true
+
+internal fun MutableMethod.injectVaultNotificationIdentity() {
+    val returns = implementation!!.instructions.withIndex()
+        .filter { it.value.opcode == Opcode.RETURN_OBJECT }.map { it.index }
+    for (at in returns.asReversed()) {
+        // p2 is the unchanged payload the stock builder used for the Message's identity.
+        addInstruction(at, "invoke-static/range {p2 .. p2}, $VAULT_NOTIFICATION_IDENTITY")
+    }
+}
 
 /** The bridge's video resolution: (user session, message) to the message's video data. */
 private fun Method.isBridgeVideo(): Boolean =
@@ -60,6 +95,12 @@ internal fun findVaultMediaBridge(classes: Iterable<ClassDef>): List<Method> {
 
 /** The method is one of the bridge's three resolutions, with four local registers to work in. */
 internal fun MutableMethod.validateVaultMediaBridge() {
+    if (isNativePlaybackBuilder()) {
+        if (implementation!!.registerCount != 34 || implementation!!.instructions.count {
+            it.opcode == Opcode.RETURN_VOID
+        } != 1) throw PatchException("Messenger controls: the playback builder registers changed")
+        return
+    }
     if (!isBridgeResolution()) {
         throw PatchException("Messenger controls: ${hookId()} isn't a media bridge resolution")
     }
@@ -75,6 +116,12 @@ internal fun MutableMethod.validateVaultMediaBridge() {
 /** Copies the message and result into dead locals at each return, leaving the stock return register intact. */
 internal fun MutableMethod.injectVaultMediaBridge() {
     validateVaultMediaBridge()
+    if (isNativePlaybackBuilder()) {
+        val at = implementation!!.instructions.indexOfFirst { it.opcode == Opcode.RETURN_VOID }
+        // p6 is the untouched FU2 model parameter. A range invoke reads it directly.
+        addInstruction(at, "invoke-static/range {p6 .. p6}, $VAULT_NATIVE_PLAYBACK")
+        return
+    }
     val contract = messageLogContract!!
     val resolved = when {
         isBridgeVideo() -> VAULT_RESOLVED_VIDEO

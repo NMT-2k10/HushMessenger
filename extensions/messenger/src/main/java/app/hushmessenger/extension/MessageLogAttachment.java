@@ -389,6 +389,68 @@ final class MessageLogAttachment {
         }
     }
 
+    /** Only the full-media URI produced for a regular 587 thread-view model. */
+    static Found nativePlayback(Object model, String packageName) throws ReflectiveOperationException {
+        if (model == null) return null;
+        String type = model.getClass().getName();
+        java.util.LinkedHashSet<String> addresses = new java.util.LinkedHashSet<>();
+        String kind;
+        if ("X.AHT".equals(type)) {
+            kind = AUDIO;
+            addNativeSource(namedField(model, "A01"), packageName, addresses);
+        } else if ("X.AZy".equals(type)) {
+            kind = VIDEO;
+            Object attachment = namedField(model, "A00");
+            if (attachment == null) return null;
+            // The progressive player sources are separate from the poster and from view-once video.
+            Object sources = namedField(attachment, "A0F");
+            if (!(sources instanceof List)) return null;
+            for (Object source : (List<?>) sources) {
+                if (source == null || !"com.facebook.video.engine.api.VideoDataSource".equals(
+                    source.getClass().getName())) continue;
+                addNativeSource(namedField(source, "A08"), packageName, addresses);
+                if (addresses.size() == 8) break;
+            }
+        } else {
+            return null;
+        }
+        return addresses.isEmpty() ? null : new Found(addresses.toArray(new String[0]), kind);
+    }
+
+    static String nativePlaybackId(Object model) throws ReflectiveOperationException {
+        Object value = playbackField(model, "A08");
+        return value instanceof String ? (String) value : null;
+    }
+
+    static long nativePlaybackTimestamp(Object model) throws ReflectiveOperationException {
+        Object value = playbackField(model, "A02");
+        return value instanceof Long ? (Long) value : 0L;
+    }
+
+    private static Object playbackField(Object model, String name) throws ReflectiveOperationException {
+        Class<?> parent = model.getClass().getSuperclass();
+        if (parent == null || !"X.FU2".equals(parent.getName())) return null;
+        Field field = parent.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(model);
+    }
+
+    static Object namedField(Object owner, String name) throws ReflectiveOperationException {
+        Field field = owner.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(owner);
+    }
+
+    private static void addNativeSource(Object value, String packageName, java.util.Set<String> addresses) {
+        if (!(value instanceof android.net.Uri)) return;
+        android.net.Uri uri = (android.net.Uri) value;
+        String scheme = uri.getScheme();
+        if (("msys".equals(scheme) || "content".equals(scheme))
+            && (packageName + ".tam-attachment").equals(uri.getAuthority())) {
+            addresses.add(uri.toString());
+        }
+    }
+
     /**
      * The media in what Messenger's own resolver produced for a message — the photo data, video data or audio
      * data the thread view asked for in order to show the message. A message's own objects carry references

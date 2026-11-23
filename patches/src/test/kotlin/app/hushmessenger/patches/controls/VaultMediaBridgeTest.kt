@@ -6,6 +6,7 @@ import com.android.tools.smali.dexlib2.iface.instruction.Instruction
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.RegisterRangeInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -53,6 +54,44 @@ class VaultMediaBridgeTest {
 
     private fun codeOf(method: app.morphe.patcher.util.proxy.mutableTypes.MutableMethod) =
         method.implementation!!.instructions.toList()
+
+    @Test fun nativePlaybackHandOffOnlyReadsTheModelParameter() {
+        val signature = "LX/5X2;->A00(${FB_USER_SESSION}LX/6fH;LX/6c5;LX/D4c;LX/50v;LX/FU2;II)V"
+        val method = fixtureMethod(signature, """
+            move-object/from16 v0, p6
+            const/4 v1, 0
+            iput-object v1, v0, LX/FU2;->A08:Ljava/lang/String;
+            return-void
+        """.trimIndent(), 34)
+        fixtureClass("LX/5X2;", listOf(method))
+        method.injectVaultMediaBridge()
+        val code = codeOf(method)
+        val call = code[code.lastIndex - 1] as RegisterRangeInstruction
+        assertEquals(Opcode.INVOKE_STATIC_RANGE, call.opcode)
+        assertEquals(31, call.startRegister)
+        assertEquals(1, call.registerCount)
+        assertEquals("$SETTINGS->vaultNativePlayback(Ljava/lang/Object;)V", (call as ReferenceInstruction).reference.toString())
+        assertEquals(Opcode.RETURN_VOID, code.last().opcode)
+        assertEquals(34, method.implementation!!.registerCount)
+    }
+
+    @Test fun notificationIdentityHandOffDoesNotOverwriteTheMessageReturn() {
+        val signature = "LX/ABi;->A01(Lcom/facebook/messaging/model/messages/ParticipantInfo;LX/ABZ;)$MESSAGE"
+        val method = fixtureMethod(signature, """
+            move-object/from16 v2, p2
+            iget-object v1, v2, LX/ABZ;->A0D:Ljava/lang/String;
+            return-object v0
+        """.trimIndent(), 44)
+        assertTrue(method.isNativeNotificationBuilder())
+        method.injectVaultNotificationIdentity()
+        val code = codeOf(method)
+        val call = code[code.lastIndex - 1] as RegisterRangeInstruction
+        assertEquals(Opcode.INVOKE_STATIC_RANGE, call.opcode)
+        assertEquals(43, call.startRegister)
+        assertEquals(1, call.registerCount)
+        assertEquals(Opcode.RETURN_OBJECT, code.last().opcode)
+        assertEquals(0, (code.last() as OneRegisterInstruction).registerA)
+    }
 
     /** The six instructions the hand-off leaves in front of the return at [returnAt]. */
     private fun assertHandOff(code: List<Instruction>, returnAt: Int, messageRegister: Int, handOff: String) {
