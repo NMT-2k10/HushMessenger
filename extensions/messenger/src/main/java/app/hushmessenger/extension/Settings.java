@@ -1467,6 +1467,7 @@ public final class Settings {
                 thread.setDaemon(true);
                 return thread;
             });
+    private static final java.util.Set<String> VAULT_VISUAL_MODELS = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /** Messenger's normal 587 E2EE playback model, after it assigns the exact message ID. */
     public static void vaultNativePlayback(Object model) {
@@ -1483,7 +1484,8 @@ public final class Settings {
                     VaultDiag.extracted("native_playback", found == null ? null : found.kind,
                         found == null ? 0 : found.addresses.length);
                     if (id != null && found != null) {
-                        Vault72h.attachNativePlayback(id, found, MessageLogAttachment.nativePlaybackTimestamp(model));
+                        Vault72h.attachNativePlayback(id, found, MessageLogAttachment.nativePlaybackTimestamp(model),
+                            MessageLogAttachment.nativePlaybackSender(model));
                     }
                 } catch (Throwable unreadable) {
                     VaultDiag.media("extract", "native_playback_error");
@@ -1491,6 +1493,41 @@ public final class Settings {
             });
         } catch (Throwable rejected) {
             VaultDiag.media("extract", "queue_rejected");
+        }
+    }
+
+    /** Receives the ordinary photo or sticker after Messenger resolves its full media address. */
+    public static void vaultNativeVisual(Object attachments, Object model) {
+        try {
+            if (model == null || !vaultWanted() || !Vault72h.mediaWanted(MessageLogAttachment.PHOTO)) return;
+            String modelType = model.getClass().getName();
+            if (modelType.startsWith("X.") && VAULT_VISUAL_MODELS.size() < 64 && VAULT_VISUAL_MODELS.add(modelType)) {
+                VaultDiag.event("NATIVE_VISUAL_MODEL", "type=" + modelType);
+            }
+            if (!"X.AFi".equals(modelType) && !"X.AW0".equals(modelType) && !"X.Aad".equals(modelType)) return;
+            int attachmentType = 0;
+            if (attachments != null) {
+                Class<?> rows = Class.forName("X.5SV", false, model.getClass().getClassLoader());
+                int count = (Integer) rows.getMethod("getCount").invoke(attachments);
+                if (count > 1) return;
+                if (count == 1) attachmentType = (Integer) rows.getMethod("Awv", int.class).invoke(attachments, 0);
+            }
+            String kind = MessageLogAttachment.nativeVisualKind(attachmentType, modelType);
+            if (kind == null) return;
+            VAULT_RESOLUTIONS.execute(() -> {
+                try {
+                    if (!vaultWanted()) return;
+                    String id = MessageLogAttachment.nativePlaybackId(model);
+                    MessageLogAttachment.Found found = MessageLogAttachment.nativeVisual(model, kind);
+                    VaultDiag.extracted("native_visual", kind, found == null ? 0 : found.addresses.length);
+                    if (id != null && found != null) Vault72h.attachNativeVisual(id, found,
+                        MessageLogAttachment.nativePlaybackTimestamp(model), MessageLogAttachment.nativePlaybackSender(model));
+                } catch (Throwable unreadable) {
+                    VaultDiag.media("extract", "native_visual_error");
+                }
+            });
+        } catch (Throwable unreadable) {
+            VaultDiag.media("extract", "native_visual_unavailable");
         }
     }
 

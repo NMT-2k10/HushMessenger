@@ -571,9 +571,19 @@ private fun controlPatch(key: String, title: String, summary: String, group: Str
                             mutableClassDefBy(expected.definingClass).methods.single { it.hookId() == expected.hookId() }
                         }
                 } else null
+                val visual = if (playback != null) {
+                    classDefByOrNull(VAULT_VISUAL_RENDER_CLASS)?.methods?.singleOrNull { it.vaultVisualCallIndex() != null }
+                        ?.let { expected ->
+                            val owner = mutableClassDefBy(expected.definingClass)
+                            val method = owner.methods.single { it.hookId() == expected.hookId() }
+                            Triple(owner, method, method.vaultVisualCallIndex()
+                                ?: throw PatchException("Vault visual renderer changed during patching"))
+                        }
+                } else null
                 injectControl(key, methods)
                 playback?.injectVaultMediaBridge()
                 notification?.injectVaultNotificationIdentity()
+                visual?.let { (owner, method, at) -> owner.injectVaultVisualRendering(method, at) }
                 for ((row, helper) in helpers) row.addUnsentRowHelper(helper)
             } else if (key == MEDIA_CAPTION) {
                 // Built before the first edit, so a compose fragment that can't take the helper stops the patch with

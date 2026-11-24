@@ -2,8 +2,11 @@ package app.hushmessenger.patches.controls
 
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
 import app.morphe.patcher.extensions.InstructionExtensions.addInstruction
+import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
 import app.morphe.patcher.extensions.InstructionExtensions.getInstruction
+import app.morphe.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.morphe.patcher.patch.PatchException
+import app.morphe.patcher.util.proxy.mutableTypes.MutableClass
 import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod
 import app.morphe.patcher.util.smali.ExternalLabel
 import com.android.tools.smali.dexlib2.AccessFlags
@@ -12,6 +15,11 @@ import com.android.tools.smali.dexlib2.iface.ClassDef
 import com.android.tools.smali.dexlib2.iface.Method
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.RegisterRangeInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethodImplementation
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethodParameter
 
 /**
  * The Temporary Vault's second set of eyes on a message's media. A message's notification-time object
@@ -25,6 +33,7 @@ import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 internal const val VAULT_MEDIA_BRIDGE = "vault_media_bridge"
 internal const val VAULT_NATIVE_PLAYBACK_CLASS = "LX/5X2;"
 internal const val VAULT_NATIVE_NOTIFICATION_CLASS = "LX/ABi;"
+internal const val VAULT_VISUAL_RENDER_CLASS = "LX/5mK;"
 
 private const val VIDEO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/VideoAttachmentData;"
 private const val AUDIO_ATTACHMENT_DATA = "Lcom/facebook/messaging/attachments/AudioAttachmentData;"
@@ -35,6 +44,50 @@ private const val VAULT_RESOLVED_AUDIO = "$SETTINGS->vaultResolvedAudio(Ljava/la
 private const val NATIVE_MEDIA_ID = "LX/FU2;->A08:Ljava/lang/String;"
 private const val VAULT_NATIVE_PLAYBACK = "$SETTINGS->vaultNativePlayback(Ljava/lang/Object;)V"
 private const val VAULT_NOTIFICATION_IDENTITY = "$SETTINGS->vaultNotificationIdentity(Ljava/lang/Object;)V"
+private const val NATIVE_MODEL = "LX/FU2;"
+private const val NATIVE_ATTACHMENTS = "LX/5SV;"
+private const val NATIVE_MODEL_PARAMETERS = "$FB_USER_SESSION"+"LX/6fH;LX/6c5;LX/D4c;LX/50v;${NATIVE_MODEL}II"
+private const val NATIVE_MODEL_CALL = "$VAULT_NATIVE_PLAYBACK_CLASS->A00($NATIVE_MODEL_PARAMETERS)V"
+private const val VISUAL_HELPER = "hushVaultVisual"
+private const val VAULT_NATIVE_VISUAL = "$SETTINGS->vaultNativeVisual(Ljava/lang/Object;Ljava/lang/Object;)V"
+
+/** The 587 renderer holds the attachment rows immediately before the nine-register builder invocation. */
+internal fun Method.vaultVisualCallIndex(): Int? {
+    if (definingClass != VAULT_VISUAL_RENDER_CLASS || name != "A5b" || returnType != "Ljava/lang/Object;" ||
+        parameterTypes != listOf("Ljava/lang/Object;", "Ljava/lang/Object;")) return null
+    val implementation = implementation ?: return null
+    if (implementation.registerCount != 53) return null
+    val code = implementation.instructions.toList()
+    val at = code.indices.singleOrNull { index ->
+        val call = code[index] as? RegisterRangeInstruction ?: return@singleOrNull false
+        call.opcode == Opcode.INVOKE_VIRTUAL_RANGE && call.startRegister == 35 && call.registerCount == 9 &&
+            (call as? ReferenceInstruction)?.reference.toString() == NATIVE_MODEL_CALL
+    } ?: return null
+    val prepare = code.getOrNull(at - 3) as? TwoRegisterInstruction ?: return null
+    if (prepare.opcode != Opcode.MOVE_OBJECT_FROM16 || prepare.registerA != 41 || prepare.registerB != 13) return null
+    val attachmentCast = code.subList((at - 50).coerceAtLeast(0), at).lastOrNull {
+        it.opcode == Opcode.CHECK_CAST && (it as? OneRegisterInstruction)?.registerA == 34
+    } as? ReferenceInstruction ?: return null
+    return at.takeIf { attachmentCast.reference.toString() == NATIVE_ATTACHMENTS }
+}
+
+internal fun MutableClass.injectVaultVisualRendering(method: MutableMethod, at: Int) {
+    if (methods.any { it.name == VISUAL_HELPER }) throw PatchException("Vault visual helper already exists")
+    val params = listOf(NATIVE_ATTACHMENTS, VAULT_NATIVE_PLAYBACK_CLASS, FB_USER_SESSION, "LX/6fH;", "LX/6c5;",
+        "LX/D4c;", "LX/50v;", NATIVE_MODEL, "I", "I")
+    val helper = MutableMethod(ImmutableMethod(type, VISUAL_HELPER, params.map { ImmutableMethodParameter(it, null, null) },
+        "V", AccessFlags.PRIVATE.value or AccessFlags.STATIC.value, null, null,
+        ImmutableMethodImplementation(10, emptyList(), null, null))).apply {
+        addInstructions(0, """
+            invoke-virtual/range {p1 .. p9}, $NATIVE_MODEL_CALL
+            invoke-static {p0, p7}, $VAULT_NATIVE_VISUAL
+            return-void
+        """.trimIndent())
+    }
+    methods.add(helper)
+    directMethods.add(helper)
+    method.replaceInstruction(at, "invoke-static/range {v34 .. v43}, $type->$VISUAL_HELPER(${params.joinToString("")})V")
+}
 
 // Messenger 587 assigns the server message ID to its thread-view model after resolving the attachment.
 internal fun Method.isNativePlaybackBuilder(): Boolean =

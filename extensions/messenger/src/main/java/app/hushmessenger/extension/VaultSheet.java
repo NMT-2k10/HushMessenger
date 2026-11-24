@@ -3,6 +3,8 @@ package app.hushmessenger.extension;
 import android.app.Dialog;
 import android.graphics.BitmapFactory;
 import android.media.MediaPlayer;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -32,16 +34,33 @@ final class VaultSheet {
         thread.setDaemon(true);
         return thread;
     });
+    private static final ExecutorService PLAYBACK = Executors.newSingleThreadExecutor(work -> {
+        Thread thread = new Thread(work, "HushVaultPlayback");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     private final SettingsActivity page;
     private Dialog dialog;
+    private android.widget.ScrollView scroll;
     private LinearLayout list;
     private Vault72h.Filter filter = Vault72h.Filter.ALL;
     private boolean byChat;
     private String thread;
     private String query = "";
     private int shown = PAGE;
-    private long generation;
+    private volatile long generation;
+    private volatile long mediaGeneration;
+    private long displayedRevision;
+    private boolean loading;
+    private final Handler ui = new Handler(Looper.getMainLooper());
+    private final Runnable refresh = new Runnable() {
+        @Override public void run() {
+            if (dialog == null || !dialog.isShowing()) return;
+            if (!loading && !page.isFinishing() && displayedRevision != Vault72h.revision()) load(true);
+            ui.postDelayed(this, 750);
+        }
+    };
     private MediaPlayer player;
     private File audioFile;
     private Dialog mediaDialog;
@@ -115,11 +134,15 @@ final class VaultSheet {
         String blocked = captureBlockCaption();
         if (!blocked.isEmpty()) page.ui.add(sheet.body, page.ui.text(blocked, 13, page.ui.warning, false), 0);
         dialog = sheet.dialog;
+        scroll = sheet.scroll;
         dialog.setOnDismissListener(dismissed -> {
-            stopAudio();
-            if (mediaDialog != null) mediaDialog.dismiss();
             if (dialog == dismissed) {
+                ui.removeCallbacks(refresh);
+                mediaGeneration++;
+                stopAudio();
+                if (mediaDialog != null) mediaDialog.dismiss();
                 dialog = null;
+                scroll = null;
                 list = null;
                 generation++;
             }
@@ -144,7 +167,6 @@ final class VaultSheet {
         addFilter(filters, "vault_filter_stickers", Vault72h.Filter.STICKERS_GIFS, false);
         addFilter(filters, "vault_filter_audio_files", Vault72h.Filter.AUDIO_FILES, false);
         addFilter(filters, "vault_filter_conversations", null, true);
-        LinearLayout filterScroll = new LinearLayout(page);
         android.widget.HorizontalScrollView scroller = new android.widget.HorizontalScrollView(page);
         scroller.addView(filters);
         sheet.body.addView(scroller);
@@ -161,6 +183,7 @@ final class VaultSheet {
         sheet.action(close);
         sheet.show();
         load();
+        ui.postDelayed(refresh, 750);
     }
 
     private void addFilter(LinearLayout row, String key, Vault72h.Filter target, boolean chats) {
@@ -179,20 +202,35 @@ final class VaultSheet {
 
     /** Reads the vault off the main thread and renders what it finds. */
     private void load() {
+        load(false);
+    }
+
+    private void load(boolean preserveScroll) {
         if (list == null) return;
         final long mine = ++generation;
+        loading = true;
         final Vault72h.Filter wanted = filter;
         final boolean chats = byChat;
         final String keptThread = thread, keptQuery = query;
         final int keepShown = shown;
         WORK.execute(() -> {
+            if (mine != generation) return;
+            long revision = Vault72h.revision();
             long now = System.currentTimeMillis();
             Vault72h.Stats stats = Vault72h.stats(now);
             List<Vault72h.Entry> entries = chats ? null : Vault72h.entries(wanted, keptThread, keptQuery, now);
             List<String[]> conversations = chats ? Vault72h.conversations(now) : null;
             page.runOnUiThread(() -> {
                 if (dialog == null || mine != generation || list == null) return;
+                loading = false;
+                displayedRevision = revision;
+                int scrollY = preserveScroll ? scroll.getScrollY() : 0;
                 render(stats, entries, conversations, keepShown, now);
+                if (preserveScroll && scrollY > 0) {
+                    scroll.post(() -> {
+                        if (mine == generation && scroll != null) scroll.scrollTo(0, scrollY);
+                    });
+                }
             });
         });
     }
@@ -267,7 +305,7 @@ final class VaultSheet {
                 LinearLayout media = page.ui.row();
                 Button open = page.ui.button(page.text.get("vault_open_media"));
                 open.setTag("vault_open_media");
-                open.setOnClickListener(clicked -> openMedia(entry));
+                open.setOnClickListener(clicked -> openMedia(entry.rowId));
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
                 params.setMarginStart(page.ui.dp(8));
                 media.addView(open, params);
@@ -322,58 +360,27 @@ final class VaultSheet {
     }
 
     /** Opens a kept photo full-screen, or plays a kept video or voice clip, all from the sealed file. */
-    private void openMedia(Vault72h.Entry entry) {
-        if (Vault72h.KIND_PHOTO.equals(entry.kind) || Vault72h.KIND_STICKER.equals(entry.kind)
-            || Vault72h.KIND_GIF.equals(entry.kind)) {
-            WORK.execute(() -> {
-                byte[] bytes = Vault72h.openMedia(page, entry);
-                android.graphics.drawable.Drawable drawable = null;
-                android.graphics.Bitmap picture = null;
-                if (bytes != null && android.os.Build.VERSION.SDK_INT >= 28) {
-                    // ImageDecoder plays animated GIF and WebP files as they were sent, not as a still
-                    // first frame, and decodes still photos the same as the bitmap path did.
-                    try {
-                        drawable = android.graphics.ImageDecoder.decodeDrawable(
-                            android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes)),
-                            (decoder, info, source) -> {
-                                int width = info.getSize().getWidth();
-                                int height = info.getSize().getHeight();
-                                int longest = Math.max(width, height);
-                                if (longest > 2048) {
-                                    decoder.setTargetSize(width * 2048 / longest, height * 2048 / longest);
-                                }
-                            });
-                    } catch (Throwable undecodable) {
-                        drawable = null;
-                    }
-                }
-                if (bytes != null && drawable == null) {
-                    BitmapFactory.Options bounds = new BitmapFactory.Options();
-                    bounds.inJustDecodeBounds = true;
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
-                    BitmapFactory.Options options = new BitmapFactory.Options();
-                    options.inSampleSize = 1;
-                    while (bounds.outWidth / (options.inSampleSize * 2) >= 1024) options.inSampleSize *= 2;
-                    picture = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
-                }
-                final android.graphics.drawable.Drawable shownDrawable = drawable;
-                final android.graphics.Bitmap shown = picture;
+    private void openMedia(long rowId) {
+        long request = ++mediaGeneration;
+        PLAYBACK.execute(() -> {
+            if (request != mediaGeneration) return;
+            Vault72h.Entry entry = Vault72h.currentMedia(page, rowId);
+            if (entry == null) {
                 page.runOnUiThread(() -> {
-                    if (shownDrawable == null && shown == null) {
+                    if (currentMediaRequest(request)) {
                         page.feedback(page.text.get("vault_media_unavailable"), Toast.LENGTH_LONG);
-                        return;
                     }
-                    if (page.isFinishing() || page.isDestroyed() || dialog == null) return;
-                    showPicture(shownDrawable, shown);
-                    VaultDiag.media("viewer", "image_open");
                 });
-            });
-            return;
-        }
-        WORK.execute(() -> {
+                return;
+            }
+            if (Vault72h.KIND_PHOTO.equals(entry.kind) || Vault72h.KIND_STICKER.equals(entry.kind)
+                || Vault72h.KIND_GIF.equals(entry.kind)) {
+                openImage(entry, request);
+                return;
+            }
             File playable = Vault72h.mediaCacheFile(page, entry);
             page.runOnUiThread(() -> {
-                if (page.isFinishing() || page.isDestroyed() || dialog == null) {
+                if (!currentMediaRequest(request)) {
                     if (playable != null) playable.delete();
                     return;
                 }
@@ -388,8 +395,58 @@ final class VaultSheet {
         });
     }
 
+    private void openImage(Vault72h.Entry entry, long request) {
+        byte[] bytes = Vault72h.openMedia(page, entry);
+        android.graphics.drawable.Drawable drawable = null;
+        android.graphics.Bitmap picture = null;
+        if (bytes != null && android.os.Build.VERSION.SDK_INT >= 28) {
+            // ImageDecoder plays animated GIF and WebP files as they were sent, not as a still
+            // first frame, and decodes still photos the same as the bitmap path did.
+            try {
+                drawable = android.graphics.ImageDecoder.decodeDrawable(
+                    android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes)),
+                    (decoder, info, source) -> {
+                        int width = info.getSize().getWidth();
+                        int height = info.getSize().getHeight();
+                        int longest = Math.max(width, height);
+                        if (longest > 2048) {
+                            decoder.setTargetSize(width * 2048 / longest, height * 2048 / longest);
+                        }
+                    });
+            } catch (Throwable undecodable) {
+                drawable = null;
+            }
+        }
+        if (bytes != null && drawable == null) {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = 1;
+            while (bounds.outWidth / (options.inSampleSize * 2) >= 1024) options.inSampleSize *= 2;
+            picture = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
+        }
+        final android.graphics.drawable.Drawable shownDrawable = drawable;
+        final android.graphics.Bitmap shown = picture;
+        page.runOnUiThread(() -> {
+            if (!currentMediaRequest(request)) return;
+            if (shownDrawable == null && shown == null) {
+                page.feedback(page.text.get("vault_media_unavailable"), Toast.LENGTH_LONG);
+                return;
+            }
+            showPicture(shownDrawable, shown);
+            VaultDiag.media("viewer", "image_open");
+        });
+    }
+
+    private boolean currentMediaRequest(long request) {
+        return request == mediaGeneration && dialog != null && dialog.isShowing()
+            && !page.isFinishing() && !page.isDestroyed();
+    }
+
     private void showPicture(android.graphics.drawable.Drawable drawable, android.graphics.Bitmap picture) {
         if (mediaDialog != null) mediaDialog.dismiss();
+        stopAudio();
         Dialog viewer = new Dialog(page, android.R.style.Theme_Material_NoActionBar_Fullscreen);
         android.widget.FrameLayout frame = new android.widget.FrameLayout(page);
         frame.setBackgroundColor(android.graphics.Color.BLACK);
@@ -409,7 +466,7 @@ final class VaultSheet {
             ? (android.graphics.drawable.AnimatedImageDrawable) drawable : null;
         viewer.setOnDismissListener(closed -> {
             if (animation != null) animation.stop();
-            mediaDialog = null;
+            if (mediaDialog == closed) mediaDialog = null;
         });
         mediaDialog = viewer;
         viewer.show();
@@ -421,7 +478,6 @@ final class VaultSheet {
         stopAudio();
         SettingsDialog sheet = new SettingsDialog(page, page.ui, page.text, page.text.get("vault_title"), "");
         VideoView video = new VideoView(page);
-        video.setVideoPath(playable.getAbsolutePath());
         video.setMediaController(new android.widget.MediaController(page));
         video.setOnPreparedListener(prepared -> VaultDiag.media("viewer", "video_ready"));
         video.setOnErrorListener((media, what, extra) -> {
@@ -433,7 +489,7 @@ final class VaultSheet {
         sheet.dialog.setOnDismissListener(closed -> {
             video.stopPlayback();
             playable.delete();
-            mediaDialog = null;
+            if (mediaDialog == closed) mediaDialog = null;
         });
         mediaDialog = sheet.dialog;
         sheet.body.addView(video, new LinearLayout.LayoutParams(-1, page.ui.dp(320)));
@@ -441,17 +497,20 @@ final class VaultSheet {
         close.setOnClickListener(clicked -> sheet.dialog.dismiss());
         sheet.action(close);
         sheet.show();
+        video.setVideoPath(playable.getAbsolutePath());
         video.start();
     }
 
     private void playAudio(File playable) {
+        if (mediaDialog != null) mediaDialog.dismiss();
         stopAudio();
         audioFile = playable;
         try {
             player = new MediaPlayer();
             player.setDataSource(playable.getAbsolutePath());
-            player.setOnCompletionListener(done -> stopAudio());
+            player.setOnCompletionListener(done -> { if (player == done) stopAudio(); });
             player.setOnErrorListener((media, what, extra) -> {
+                if (player != media) return true;
                 stopAudio();
                 VaultDiag.media("viewer", "audio_error");
                 page.feedback(page.text.get("vault_media_failed"), Toast.LENGTH_LONG);

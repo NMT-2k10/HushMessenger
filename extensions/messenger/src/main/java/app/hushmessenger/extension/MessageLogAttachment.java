@@ -465,12 +465,60 @@ final class MessageLogAttachment {
         return value instanceof Long ? (Long) value : 0L;
     }
 
+    static long nativePlaybackSender(Object model) {
+        try {
+            Object author = playbackField(model, "A05");
+            if (author == null || !"X.5GY".equals(author.getClass().getName())) return 0;
+            Object userId = namedField(author, "A0B");
+            return userId instanceof String ? Long.parseLong((String) userId) : 0;
+        } catch (ReflectiveOperationException | NumberFormatException unavailable) {
+            return 0;
+        }
+    }
+
     private static Object playbackField(Object model, String name) throws ReflectiveOperationException {
         Class<?> parent = model.getClass().getSuperclass();
+        if (parent != null && "X.66G".equals(parent.getName())) parent = parent.getSuperclass();
         if (parent == null || !"X.FU2".equals(parent.getName())) return null;
         Field field = parent.getDeclaredField(name);
         field.setAccessible(true);
         return field.get(model);
+    }
+
+    /** Resolves the 587 attachment enum from the live row before using its rendered model. */
+    static String nativeVisualKind(int attachmentType, String modelType) {
+        if ("X.AFi".equals(modelType)) {
+            if (attachmentType == 2) return PHOTO;
+            if (attachmentType == 3) return GIF;
+        }
+        if ("X.AW0".equals(modelType) || "X.Aad".equals(modelType)) {
+            if (attachmentType == 1 || attachmentType == 10 || attachmentType == 15
+                || (attachmentType == 0 && "X.AW0".equals(modelType))) return STICKER;
+        }
+        return null;
+    }
+
+    static Found nativeVisual(Object model, String kind) throws ReflectiveOperationException {
+        Object data = namedField(model, "A00");
+        if (data == null) return null;
+        Object full;
+        if ("X.AW0".equals(model.getClass().getName())) {
+            full = namedField(data, "A02");
+            if (full == null) full = namedField(data, "A09");
+        } else {
+            if (data instanceof List) {
+                List<?> photos = (List<?>) data;
+                if (photos.size() != 1) return null;
+                data = photos.get(0);
+            }
+            if (data == null || !"com.facebook.xapp.messaging.threadview.model.photo.Photo".equals(data.getClass().getName())) {
+                return null;
+            }
+            // The 587 photo builder fills A0K from Crn, which asks the stock resolver for FULL.
+            full = namedField(data, "A0K");
+        }
+        String address = vaultAddress(full);
+        return address == null ? null : new Found(address, kind);
     }
 
     static Object namedField(Object owner, String name) throws ReflectiveOperationException {

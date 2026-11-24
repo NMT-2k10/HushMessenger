@@ -258,6 +258,100 @@ public class Vault72hTest {
         assertEquals(0, all(T0).size());
     }
 
+    @Test public void aRecallBeforeCaptureSurvivesReopeningTheDatabase() {
+        assertFalse(Vault72h.markRecalledNow("queued-notification"));
+        assertTrue(all(T0).isEmpty());
+        Vault72h.resetForTests();
+        long revision = Vault72h.revision();
+        assertTrue(capture("original text", "thread-1", "queued-notification", T0 + 2_000) > 0);
+        List<Vault72h.Entry> recalled = Vault72h.entries(Vault72h.Filter.RECALLED, null, null, T0 + 2_000);
+        assertEquals(1, recalled.size());
+        assertEquals("original text", recalled.get(0).text);
+        assertTrue(Vault72h.revision() > revision);
+    }
+
+    @Test public void anExpiredPendingRecallCannotMarkALaterCapture() {
+        assertFalse(Vault72h.markRecalledNow("expired-recall"));
+        long later = T0 + 3 * 60_000;
+        assertTrue(capture("later text", "thread-1", "expired-recall", later) > 0);
+        assertFalse(all(later).get(0).recalled());
+    }
+
+    @Test public void aRecallCanUseTheOtherIdOfAMergedEntry() {
+        capture("archived once", "thread-1", "from-notification", T0);
+        Vault72h.recordRowNow("archived once", "from-row", "offline-id", T0, 7, 0, 0, T0 + 500);
+        assertEquals(1, all(T0 + 500).size());
+        assertTrue(Vault72h.markRecalledNow("from-row"));
+        assertTrue(all(T0 + 500).get(0).recalled());
+    }
+
+    @Test public void aPlaceholderCanMarkByTheRecordedThreadingId() {
+        Vault72h.recordRowNow("before recall", "original-id", "offline-id", T0, 7, 0, 0, T0 + 400);
+        assertEquals(-1, Vault72h.recordRowNow(null, "placeholder-id", "offline-id", T0, 7,
+            Settings.UNSENT_PLACEHOLDER_TYPE, Settings.UNSENT_PLACEHOLDER_SUBTYPE, T0 + 600));
+        assertEquals(1, all(T0 + 600).size());
+        assertTrue(all(T0 + 600).get(0).recalled());
+    }
+
+    @Test public void aSharedThreadingIdCannotMarkUnrelatedMessages() {
+        Vault72h.recordRowNow("one", "m-one", "shared-id", T0, 7, 0, 0, T0 + 400);
+        Vault72h.recordRowNow("two", "m-two", "shared-id", T0, 8, 0, 0, T0 + 600);
+        assertFalse(Vault72h.markRecalledNow("shared-id"));
+        assertEquals(0, Vault72h.entries(Vault72h.Filter.RECALLED, null, null, T0 + 600).size());
+    }
+
+    @Test public void aPlaceholderWithReplacedIdsMatchesTheExactSendTimeAndSender() {
+        Vault72h.recordRowNow("before recall", "original-id", "offline-id", T0, 7, 0, 0, T0 + 400);
+        Vault72h.recordRowNow("other sender", "other-id", "other-offline", T0, 9, 0, 0, T0 + 450);
+        assertEquals(-1, Vault72h.recordRowNow(null, "placeholder-id", "placeholder-offline", T0, 7,
+            Settings.UNSENT_PLACEHOLDER_TYPE, Settings.UNSENT_PLACEHOLDER_SUBTYPE, T0 + 600));
+        List<Vault72h.Entry> recalled = Vault72h.entries(Vault72h.Filter.RECALLED, null, null, T0 + 600);
+        assertEquals(1, recalled.size());
+        assertEquals("before recall", recalled.get(0).text);
+    }
+
+    @Test public void aPlaceholderCannotChooseBetweenRowsWithTheSameSendTimeAndSender() {
+        Vault72h.recordRowNow("one", "m-one", "offline-one", T0, 7, 0, 0, T0 + 400);
+        Vault72h.recordRowNow("two", "m-two", "offline-two", T0, 7, 0, 0, T0 + 500);
+        Vault72h.recordRowNow(null, "placeholder-id", "placeholder-offline", T0, 7,
+            Settings.UNSENT_PLACEHOLDER_TYPE, Settings.UNSENT_PLACEHOLDER_SUBTYPE, T0 + 600);
+        assertEquals(0, Vault72h.entries(Vault72h.Filter.RECALLED, null, null, T0 + 600).size());
+    }
+
+    @Test public void aLateAttachmentDoesNotStartAFetchForARecalledEntry() {
+        Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
+        assertFalse(Vault72h.markRecalledNow("early-recall-media"));
+        MessageLogAttachment.Found found = photo("early-recall-media");
+        assertTrue(Vault72h.recordNow(null, "thread-1", "early-recall-media", Vault72h.SOURCE_NOTIFICATION,
+            found, T0, 0, "", "", T0 + 1_000) > 0);
+        Vault72h.Entry entry = all(T0 + 1_000).get(0);
+        assertTrue(entry.recalled());
+        assertEquals(Vault72h.MEDIA_NO_ADDRESS, entry.mediaStatus);
+    }
+
+    @Test public void nativeVisualClassificationRequiresOrdinaryAttachmentMetadata() {
+        assertEquals(MessageLogAttachment.PHOTO, MessageLogAttachment.nativeVisualKind(2, "X.AFi"));
+        assertEquals(MessageLogAttachment.GIF, MessageLogAttachment.nativeVisualKind(3, "X.AFi"));
+        assertEquals(MessageLogAttachment.STICKER, MessageLogAttachment.nativeVisualKind(1, "X.AW0"));
+        assertEquals(MessageLogAttachment.STICKER, MessageLogAttachment.nativeVisualKind(15, "X.Aad"));
+        for (int type : new int[] {4, 5, 8, 9, 99}) {
+            assertNull(MessageLogAttachment.nativeVisualKind(type, "X.AFi"));
+            assertNull(MessageLogAttachment.nativeVisualKind(type, "X.AW0"));
+            assertNull(MessageLogAttachment.nativeVisualKind(type, "X.Aad"));
+        }
+        assertNull(MessageLogAttachment.nativeVisualKind(2, "X.Aad"));
+    }
+
+    @Test public void aNativeAudioArrivalKeepsTheSenderForRecallMatching() {
+        MessageLogAttachment.Found found = new MessageLogAttachment.Found("content://test/audio", MessageLogAttachment.AUDIO);
+        Vault72h.recordNativeMediaNow("audio-id", found, T0, 7, T0 + 200, true);
+        Vault72h.recordRowNow(null, "placeholder-id", "", T0, 7, Settings.UNSENT_PLACEHOLDER_TYPE,
+            Settings.UNSENT_PLACEHOLDER_SUBTYPE, T0 + 800);
+        List<Vault72h.Entry> recalled = Vault72h.entries(Vault72h.Filter.RECALLED, null, null, T0 + 800);
+        assertEquals(1, recalled.size());
+        assertEquals(Vault72h.KIND_AUDIO, recalled.get(0).kind);
+    }
+
     @Test public void anExpiredEntryIsInvisibleEvenBeforeAnyPurgeRuns() {
         capture("hết hạn", "thread-1", "m5", T0);
         assertEquals(1, all(T0 + Vault72h.TTL_MS - 1).size());

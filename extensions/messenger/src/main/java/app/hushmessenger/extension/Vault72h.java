@@ -27,6 +27,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import javax.crypto.Cipher;
 import javax.crypto.CipherInputStream;
 import javax.crypto.KeyGenerator;
@@ -446,8 +447,11 @@ public final class Vault72h {
     // --- Database -------------------------------------------------------------------------------------------
 
     private static final Object LOCK = new Object();
+    private static final AtomicLong REVISION = new AtomicLong();
     private static final java.util.Set<String> IN_FLIGHT = new java.util.HashSet<>();
     private static Helper helper;
+
+    static long revision() { return REVISION.get(); }
 
     private static final class Helper extends SQLiteOpenHelper {
         Helper(Context context) { super(context.getApplicationContext(), DB_NAME, null, 2); }
@@ -483,7 +487,11 @@ public final class Vault72h {
                 + "notification_id TEXT NOT NULL DEFAULT '', playback_id TEXT NOT NULL DEFAULT '')");
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_vault_video_identity"
                 + " ON vault_video_identity(poster_key,sent_at)");
-            pruneVideoIdentities(db);
+            db.execSQL("CREATE TABLE IF NOT EXISTS vault_recall_alias ("
+                + "id_hash TEXT NOT NULL, row_id INTEGER NOT NULL, PRIMARY KEY(id_hash,row_id))");
+            db.execSQL("CREATE TABLE IF NOT EXISTS vault_pending_recall ("
+                + "id_hash TEXT PRIMARY KEY NOT NULL, expires_at INTEGER NOT NULL)");
+            pruneIdentities(db);
         }
     }
 
@@ -591,7 +599,11 @@ public final class Vault72h {
         // A row is rendered again at every scroll and redraw, so the same words under the same key queue once a
         // minute at most; the database merge would only have repeated what the first capture wrote.
         String key = (msgId != null && !msgId.isEmpty() ? msgId : threadingId == null ? "" : threadingId)
+            + '\u0001' + contentType + '\u0001' + contentSubtype
             + '\u0001' + MessageLog.digest(text == null ? "" : text);
+        if (contentType == Settings.UNSENT_PLACEHOLDER_TYPE && contentSubtype == Settings.UNSENT_PLACEHOLDER_SUBTYPE) {
+            key += "\u0001" + sentAt + "\u0001" + senderId;
+        }
         long now = System.currentTimeMillis();
         synchronized (RECENT_ROWS) {
             RECENT_ROWS.values().removeIf(at -> now - at > 60_000 || at > now);
@@ -605,8 +617,10 @@ public final class Vault72h {
             }
         }
         try {
-            WRITER.execute(() -> recordRowNow(text, msgId, threadingId, sentAt, senderId, contentType, contentSubtype,
-                System.currentTimeMillis()));
+            WRITER.execute(() -> {
+                if (Settings.vaultWanted()) recordRowNow(text, msgId, threadingId, sentAt, senderId,
+                    contentType, contentSubtype, System.currentTimeMillis());
+            });
         } catch (RuntimeException rejected) {
             Settings.hookFailedPrivately(KEY, "Can't queue a chat row for the vault", rejected);
         }
@@ -681,9 +695,8 @@ public final class Vault72h {
                     diag == null ? "" : diag, shaped != null);
                 if (rowId >= 0) {
                     rememberVideoIdentity(db, rowId, found, sentAt, keptId, playback);
-                    if (found != null && (link == null || !link.recalled)) {
-                        queueMediaLocked(context, db, rowId, kind, found, playback);
-                    }
+                    applyPendingRecallLocked(db, rowId, keptId, now);
+                    if (found != null) queueMediaLocked(context, db, rowId, kind, found, playback);
                     drainDeferredLocked(context, db, archiveId, now);
                     Settings.activeAt.put(KEY, now);
                 }
@@ -708,8 +721,11 @@ public final class Vault72h {
      */
     static long recordRowNow(String text, String msgId, String threadingId, long sentAt, long senderId,
                              int contentType, int contentSubtype, long now) {
+        if (contentType == Settings.UNSENT_PLACEHOLDER_TYPE && contentSubtype == Settings.UNSENT_PLACEHOLDER_SUBTYPE) {
+            markRecalledRow(msgId, threadingId, sentAt, senderId, now);
+            return -1;
+        }
         if (text == null || text.isEmpty()) return -1;
-        if (contentType == Settings.UNSENT_PLACEHOLDER_TYPE && contentSubtype == Settings.UNSENT_PLACEHOLDER_SUBTYPE) return -1;
         Context context = Settings.appContext;
         if (context == null) return -1;
         String keptId = MessageLog.clip(msgId == null ? "" : msgId, MAX_ID_CHARS);
@@ -736,6 +752,7 @@ public final class Vault72h {
                     senderId, KIND_TEXT, MessageLog.clip(text, MAX_TEXT_CHARS), sentAt > 0 ? sentAt : now, now,
                     SOURCE_ROW, null, false, "", false);
                 if (rowId >= 0) {
+                    rememberRecallAliasLocked(db, rowId, keptThreading, now);
                     drainDeferredLocked(context, db, key, now);
                     Settings.activeAt.put(KEY, now);
                 }
@@ -808,11 +825,22 @@ public final class Vault72h {
         enqueueResolved(id, thread, found, diag, false);
     }
 
-    static void attachNativePlayback(String id, MessageLogAttachment.Found found, long sentAt) {
+    static void attachNativePlayback(String id, MessageLogAttachment.Found found, long sentAt, long senderId) {
+        enqueueNativeMedia(id, found, sentAt, senderId, true);
+    }
+
+    static void attachNativeVisual(String id, MessageLogAttachment.Found found, long sentAt, long senderId) {
+        enqueueNativeMedia(id, found, sentAt, senderId, false);
+    }
+
+    private static void enqueueNativeMedia(String id, MessageLogAttachment.Found found, long sentAt, long senderId,
+                                           boolean playback) {
         if (id.isEmpty() || id.length() > MAX_ID_CHARS) return;
         try {
             WRITER.execute(() -> {
-                if (Settings.vaultWanted()) recordNativePlaybackNow(id, found, sentAt, System.currentTimeMillis());
+                if (Settings.vaultWanted()) {
+                    recordNativeMediaNow(id, found, sentAt, senderId, System.currentTimeMillis(), playback);
+                }
             });
         } catch (RuntimeException rejected) {
             VaultDiag.media("associate", "queue_rejected");
@@ -820,26 +848,41 @@ public final class Vault72h {
     }
 
     static void recordNativePlaybackNow(String id, MessageLogAttachment.Found found, long sentAt, long now) {
+        recordNativeMediaNow(id, found, sentAt, 0, now, true);
+    }
+
+    static void recordNativeMediaNow(String id, MessageLogAttachment.Found found, long sentAt,
+                                     long senderId, long now, boolean playback) {
         Context context = Settings.appContext;
-        if (context == null || id == null || id.isEmpty() || id.length() > MAX_ID_CHARS || found == null
-            || (!MessageLogAttachment.VIDEO.equals(found.kind) && !MessageLogAttachment.AUDIO.equals(found.kind))) return;
+        if (context == null || !validRecallId(id) || found == null) return;
+        String kind = found.kind;
+        if (playback ? !MessageLogAttachment.VIDEO.equals(kind) && !MessageLogAttachment.AUDIO.equals(kind)
+            : !MessageLogAttachment.PHOTO.equals(kind) && !MessageLogAttachment.GIF.equals(kind)
+                && !MessageLogAttachment.STICKER.equals(kind)) return;
         try {
             synchronized (LOCK) {
                 SQLiteDatabase db = db(context);
-                if (attachExactLocked(context, db, id, "", found, "", now, true) != 0) return;
+                int matched = attachExactLocked(context, db, id, "", found, "", now, playback);
+                if (matched != 0) {
+                    if (matched == 1) rememberNativeSenderLocked(db, id, sentAt, senderId);
+                    return;
+                }
                 VideoIdentity link = videoIdentity(db, found, sentAt, id, now, true);
                 if (link != null) {
                     rememberVideoIdentity(db, link.rowId, found, sentAt, id, true);
+                    rememberNativeSenderLocked(db, link.messageId, sentAt, senderId);
+                    applyPendingRecallLocked(db, link.rowId, id, now);
                     attachExactLocked(context, db, link.messageId, "", found, "", now, true);
                     return;
                 }
                 // A notification without the server ID cannot establish this identity. The stock playback
                 // model carries the ID and send time, so a fresh arrival can create its own typed entry.
                 if (sentAt > 0 && now - sentAt <= ROW_ARRIVAL_WINDOW_MS && sentAt <= now + ROW_ARRIVAL_WINDOW_MS) {
-                    recordNow(null, "", id, SOURCE_ROW, found, sentAt, 0, "", "", now, found.kind, "");
-                    VaultDiag.media("associate", "native_playback_arrival");
+                    recordNow(null, "", id, SOURCE_ROW, found, sentAt, Math.max(0, senderId),
+                        "", "", now, found.kind, "");
+                    VaultDiag.media("associate", playback ? "native_playback_arrival" : "native_visual_arrival");
                 } else {
-                    deferLocked(id, "", found, "", now, true);
+                    deferLocked(id, "", found, "", now, playback);
                 }
             }
         } catch (RuntimeException failure) {
@@ -847,15 +890,21 @@ public final class Vault72h {
         }
     }
 
+    private static void rememberNativeSenderLocked(SQLiteDatabase db, String messageId, long sentAt, long senderId) {
+        if (sentAt <= 0 || senderId <= 0) return;
+        ContentValues values = new ContentValues();
+        values.put("sender_id", senderId);
+        db.update("entries", values, "msg_id=? AND sent_at=? AND sender_id=0",
+            new String[] {messageId, String.valueOf(sentAt)});
+    }
+
     private static final class VideoIdentity {
         final long rowId;
         final String messageId;
-        final boolean recalled;
 
-        VideoIdentity(long rowId, String messageId, boolean recalled) {
+        VideoIdentity(long rowId, String messageId) {
             this.rowId = rowId;
             this.messageId = messageId;
-            this.recalled = recalled;
         }
     }
 
@@ -869,7 +918,7 @@ public final class Vault72h {
         if (!validVideoIdentity(found, sentAt, id)) return null;
         String own = playback ? "playback_id" : "notification_id";
         String other = playback ? "notification_id" : "playback_id";
-        try (Cursor row = db.rawQuery("SELECT e.row_id,e.msg_id,e.status,v." + own + ",v." + other
+        try (Cursor row = db.rawQuery("SELECT e.row_id,e.msg_id,v." + own + ",v." + other
                 + " FROM vault_video_identity v JOIN entries e ON e.row_id=v.row_id"
                 + " WHERE v.poster_key=? AND v.sent_at=? AND e.expires_at>? LIMIT 2",
             new String[] {found.videoPosterKey, String.valueOf(sentAt), String.valueOf(now)})) {
@@ -878,10 +927,10 @@ public final class Vault72h {
                 VaultDiag.media("associate", "ambiguous_video_identity");
                 return null;
             }
-            String previous = row.getString(3);
-            if (row.getString(4).isEmpty() || (!previous.isEmpty() && !id.equals(previous))) return null;
+            String previous = row.getString(2);
+            if (row.getString(3).isEmpty() || (!previous.isEmpty() && !id.equals(previous))) return null;
             VaultDiag.media("associate", "video_identity_matched");
-            return new VideoIdentity(row.getLong(0), row.getString(1), STATUS_RECALLED.equals(row.getString(2)));
+            return new VideoIdentity(row.getLong(0), row.getString(1));
         }
     }
 
@@ -901,8 +950,9 @@ public final class Vault72h {
             new String[] {String.valueOf(rowId), found.videoPosterKey, String.valueOf(sentAt), id});
     }
 
-    private static void pruneVideoIdentities(SQLiteDatabase db) {
+    private static void pruneIdentities(SQLiteDatabase db) {
         db.execSQL("DELETE FROM vault_video_identity WHERE row_id NOT IN (SELECT row_id FROM entries)");
+        db.execSQL("DELETE FROM vault_recall_alias WHERE row_id NOT IN (SELECT row_id FROM entries)");
     }
 
     private static void enqueueResolved(String id, String thread, MessageLogAttachment.Found found, String diag,
@@ -1040,6 +1090,7 @@ public final class Vault72h {
 
     private static void queueMediaLocked(Context context, SQLiteDatabase db, long rowId, String declared,
                                          MessageLogAttachment.Found found, boolean nativePlayback) {
+        if (isRecalledLocked(db, rowId)) return;
         String current = mediaStatusLocked(db, rowId);
         String kind = found.kind;
         if (MessageLogAttachment.PHOTO.equals(kind)) {
@@ -1148,10 +1199,11 @@ public final class Vault72h {
             values.put("expires_at", now + TTL_MS);
             values.put("status", STATUS_ACTIVE);
             values.put("source", source);
-            values.put("media_status", found != null ? MEDIA_PENDING
-                : attachment || mediaShaped ? MEDIA_NO_ADDRESS : MEDIA_NONE);
+            values.put("media_status", found != null || attachment || mediaShaped ? MEDIA_NO_ADDRESS : MEDIA_NONE);
             values.put("diag", diag);
             long inserted = db.insertOrThrow("entries", null, values);
+            REVISION.incrementAndGet();
+            applyPendingRecallLocked(db, inserted, msgId, now);
             VaultDiag.encryptSuccess();
             VaultDiag.dedup("inserted");
             VaultDiag.insertSuccess(inserted);
@@ -1206,7 +1258,13 @@ public final class Vault72h {
             if ((oldDiag == null || oldDiag.isEmpty()) && diag != null && !diag.isEmpty()) {
                 values.put("diag", diag);
             }
-            if (values.size() > 0) db.update("entries", values, "row_id=?", new String[] {String.valueOf(existing)});
+            if (values.size() > 0) {
+                db.update("entries", values, "row_id=?", new String[] {String.valueOf(existing)});
+                REVISION.incrementAndGet();
+            }
+            if (keepExistingId) rememberRecallAliasLocked(db, existing, msgId, now);
+            else if (values.containsKey("msg_id")) rememberRecallAliasLocked(db, existing, row.getString(8), now);
+            applyPendingRecallLocked(db, existing, msgId, now);
             VaultDiag.dedup(values.containsKey("edited_from") ? "edited" : "merged");
             return existing;
         } finally { row.close(); }
@@ -1256,12 +1314,13 @@ public final class Vault72h {
         if (kind != null && !kind.isEmpty()) values.put("media_kind", kind);
         if (bytes > 0) values.put("media_bytes", bytes);
         db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)});
+        REVISION.incrementAndGet();
     }
 
     private static boolean hasStoredPosterLocked(SQLiteDatabase db, long rowId) {
-        try (Cursor row = db.query("entries", new String[] {"media_kind", "status"}, "row_id=?",
+        try (Cursor row = db.query("entries", new String[] {"media_kind"}, "row_id=?",
             new String[] {String.valueOf(rowId)}, null, null, null, "1")) {
-            if (!row.moveToFirst() || STATUS_RECALLED.equals(row.getString(1))) return false;
+            if (!row.moveToFirst()) return false;
             String mime = row.getString(0);
             return mime != null && mime.startsWith("image/");
         }
@@ -1304,7 +1363,14 @@ public final class Vault72h {
     private static void persistMedia(Context context, long rowId, MessageLogAttachment.Found found,
                                      boolean nativePlayback) {
         synchronized (LOCK) {
-            if (!mayPersistLocked(db(context), rowId, nativePlayback)) return;
+            SQLiteDatabase db = db(context);
+            if (!mayPersistLocked(db, rowId, nativePlayback)) return;
+            if (isRecalledLocked(db, rowId)) {
+                if (MEDIA_PENDING.equals(mediaStatusLocked(db, rowId))) {
+                    updateMediaStatusLocked(db, rowId, MEDIA_UNAVAILABLE, "", "", 0);
+                }
+                return;
+            }
         }
 
         File dir = new File(context.getFilesDir(), MEDIA_DIR);
@@ -1369,6 +1435,7 @@ public final class Vault72h {
                         if (db.update("entries", values, "row_id=?", new String[] {String.valueOf(rowId)}) != 1) {
                             throw new IOException("entry disappeared");
                         }
+                        REVISION.incrementAndGet();
                     } catch (Exception failure) {
                         target.delete();
                         throw failure;
@@ -1408,6 +1475,9 @@ public final class Vault72h {
 
     // --- Recalls --------------------------------------------------------------------------------------------
 
+    private static final long RECALL_WAIT_MS = 2 * 60_000;
+    private static final int MAX_PENDING_RECALLS = 256;
+
     /** A recall the hooks saw. Queued like a capture; the mark itself never creates an entry. */
     static void markRecalled(String id) {
         if (id == null || id.isEmpty()) return;
@@ -1422,29 +1492,110 @@ public final class Vault72h {
     /** Marks the entry for [id] Recalled on the calling thread. Returns whether an entry was there to mark. */
     static boolean markRecalledNow(String id) {
         Context context = Settings.appContext;
-        if (context == null || id == null || id.isEmpty()) return false;
+        if (context == null || !validRecallId(id)) return false;
         synchronized (LOCK) {
             try {
-                ContentValues values = new ContentValues();
-                values.put("status", STATUS_RECALLED);
                 SQLiteDatabase db = db(context);
-                int changed = db.update("entries", values, "msg_id=? AND status!=?",
-                    new String[] {id, STATUS_RECALLED});
-                if (changed == 0) {
-                    try (Cursor aliases = db.query("vault_video_identity", new String[] {"row_id"},
-                        "notification_id=? OR playback_id=?", new String[] {id, id}, null, null, null, "2")) {
-                        if (aliases.moveToFirst() && aliases.getCount() == 1) {
-                            changed = db.update("entries", values, "row_id=? AND status!=?",
-                                new String[] {String.valueOf(aliases.getLong(0)), STATUS_RECALLED});
-                        }
-                    }
+                long now = clock.getAsLong();
+                long row = recallTargetLocked(db, id, now);
+                if (row > 0) return markRecallRowLocked(db, row);
+                if (row == 0) {
+                    db.delete("vault_pending_recall", "expires_at<=?", new String[] {String.valueOf(now)});
+                    ContentValues pending = new ContentValues();
+                    pending.put("id_hash", MessageLog.digest(id));
+                    pending.put("expires_at", now + RECALL_WAIT_MS);
+                    db.insertWithOnConflict("vault_pending_recall", null, pending, SQLiteDatabase.CONFLICT_IGNORE);
+                    db.execSQL("DELETE FROM vault_pending_recall WHERE id_hash IN "
+                        + "(SELECT id_hash FROM vault_pending_recall ORDER BY expires_at DESC LIMIT -1 OFFSET "
+                        + MAX_PENDING_RECALLS + ")");
+                    VaultDiag.media("recall", "awaiting_capture");
                 }
-                return changed > 0;
+                return false;
             } catch (Throwable failure) {
                 Settings.hookFailedPrivately(KEY, "Can't mark a recalled message in the vault", failure);
                 return false;
             }
         }
+    }
+
+    private static boolean validRecallId(String id) {
+        return id != null && !id.isEmpty() && id.length() <= MAX_ID_CHARS;
+    }
+
+    /** Zero means no live match, -1 means ambiguous, and a positive result is a unique row. */
+    private static long recallTargetLocked(SQLiteDatabase db, String id, long now) {
+        if (!validRecallId(id)) return 0;
+        try (Cursor rows = db.rawQuery("SELECT row_id FROM entries WHERE expires_at>? AND (msg_id=? "
+                + "OR row_id IN (SELECT row_id FROM vault_recall_alias WHERE id_hash=?) "
+                + "OR row_id IN (SELECT row_id FROM vault_video_identity WHERE notification_id=? OR playback_id=?)) LIMIT 2",
+            new String[] {String.valueOf(now), id, MessageLog.digest(id), id, id})) {
+            return rows.moveToFirst() ? rows.getCount() == 1 ? rows.getLong(0) : -1 : 0;
+        }
+    }
+
+    /** Messenger 587 sometimes replaces both IDs on its placeholder but retains the send time and sender. */
+    private static void markRecalledRow(String id, String threadingId, long sentAt, long senderId, long now) {
+        Context context = Settings.appContext;
+        if (context == null) return;
+        synchronized (LOCK) {
+            try {
+                SQLiteDatabase db = db(context);
+                long row = recallTargetLocked(db, id, now);
+                long threadedRow = id != null && id.equals(threadingId) ? row
+                    : recallTargetLocked(db, threadingId, now);
+                if (row < 0 || threadedRow < 0 || (row > 0 && threadedRow > 0 && row != threadedRow)) return;
+                long matched = Math.max(row, threadedRow);
+                if (matched == 0 && sentAt > 0 && senderId > 0) {
+                    try (Cursor rows = db.query("entries", new String[] {"row_id"},
+                        "sent_at=? AND sender_id=? AND expires_at>?",
+                        new String[] {String.valueOf(sentAt), String.valueOf(senderId), String.valueOf(now)},
+                        null, null, null, "2")) {
+                        if (rows.getCount() == 1 && rows.moveToFirst()) matched = rows.getLong(0);
+                        else if (rows.getCount() > 1) VaultDiag.media("recall", "ambiguous_row");
+                    }
+                }
+                if (matched > 0) markRecallRowLocked(db, matched);
+            } catch (RuntimeException failure) {
+                VaultDiag.media("recall", "row_error");
+            }
+        }
+    }
+
+    private static boolean markRecallRowLocked(SQLiteDatabase db, long rowId) {
+        ContentValues values = new ContentValues();
+        values.put("status", STATUS_RECALLED);
+        if (db.update("entries", values, "row_id=? AND status!=?",
+            new String[] {String.valueOf(rowId), STATUS_RECALLED}) == 0) return false;
+        REVISION.incrementAndGet();
+        VaultDiag.media("recall", "marked");
+        return true;
+    }
+
+    private static boolean isRecalledLocked(SQLiteDatabase db, long rowId) {
+        try (Cursor row = db.query("entries", new String[] {"status"}, "row_id=?",
+            new String[] {String.valueOf(rowId)}, null, null, null, "1")) {
+            return row.moveToFirst() && STATUS_RECALLED.equals(row.getString(0));
+        }
+    }
+
+    private static void rememberRecallAliasLocked(SQLiteDatabase db, long rowId, String id, long now) {
+        if (!validRecallId(id)) return;
+        ContentValues values = new ContentValues();
+        values.put("id_hash", MessageLog.digest(id));
+        values.put("row_id", rowId);
+        db.insertWithOnConflict("vault_recall_alias", null, values, SQLiteDatabase.CONFLICT_IGNORE);
+        applyPendingRecallLocked(db, rowId, id, now);
+    }
+
+    private static void applyPendingRecallLocked(SQLiteDatabase db, long rowId, String id, long now) {
+        if (!validRecallId(id)) return;
+        String hash = MessageLog.digest(id);
+        try (Cursor pending = db.query("vault_pending_recall", new String[] {"expires_at"}, "id_hash=?",
+            new String[] {hash}, null, null, null, "1")) {
+            if (!pending.moveToFirst() || pending.getLong(0) <= now || recallTargetLocked(db, id, now) != rowId) return;
+        }
+        markRecallRowLocked(db, rowId);
+        db.delete("vault_pending_recall", "id_hash=?", new String[] {hash});
     }
 
     // --- Reads ----------------------------------------------------------------------------------------------
@@ -1459,6 +1610,20 @@ public final class Vault72h {
             openText(row.getBlob(7)), openText(row.getBlob(8)), row.getLong(9), row.getLong(10), row.getLong(11),
             row.getString(12), row.getString(13), row.getString(14), row.getString(15), row.getString(16),
             row.getLong(17), row.getString(18));
+    }
+
+    static Entry currentMedia(Context context, long rowId) {
+        synchronized (LOCK) {
+            try (Cursor row = db(context).query("entries", COLUMNS,
+                "row_id=? AND expires_at>? AND media_status=?",
+                new String[] {String.valueOf(rowId), String.valueOf(clock.getAsLong()), MEDIA_STORED},
+                null, null, null, "1")) {
+                return row.moveToFirst() ? readEntry(row) : null;
+            } catch (Exception failure) {
+                VaultDiag.media("viewer", "entry_unavailable");
+                return null;
+            }
+        }
     }
 
     /**
@@ -1588,7 +1753,11 @@ public final class Vault72h {
             while (rows.moveToNext()) if (rows.getString(0) != null && !rows.getString(0).isEmpty()) media.add(rows.getString(0));
         } finally { rows.close(); }
         int removed = db.delete("entries", "expires_at<=?", new String[] {String.valueOf(now)});
-        if (removed > 0) pruneVideoIdentities(db);
+        db.delete("vault_pending_recall", "expires_at<=?", new String[] {String.valueOf(now)});
+        if (removed > 0) {
+            pruneIdentities(db);
+            REVISION.incrementAndGet();
+        }
         for (String name : media) {
             deletePlaybackFiles(context, name);
             File file = mediaFile(context, name);
@@ -1616,7 +1785,9 @@ public final class Vault72h {
             try {
                 SQLiteDatabase db = db(context);
                 db.delete("entries", null, null);
-                pruneVideoIdentities(db);
+                pruneIdentities(db);
+                db.delete("vault_pending_recall", null, null);
+                REVISION.incrementAndGet();
             } catch (Throwable failure) {
                 cleared = false;
                 Settings.hookFailedPrivately(KEY, "Can't clear the vault", failure);
