@@ -475,6 +475,7 @@ public final class SettingsActivity extends Activity {
         homeHeader.saveWords();
         hiddenWords.saveWords();
         messageLog.stop();
+        vault.stopAudioPreview();
         endUndo();
         Settings.preferences.unregisterOnSharedPreferenceChangeListener(preferenceListener);
         super.onStop();

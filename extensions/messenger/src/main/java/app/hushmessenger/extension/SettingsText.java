@@ -715,6 +715,7 @@ final class SettingsText {
         ENGLISH.put("vault_photo", "Photo");
         ENGLISH.put("vault_video", "Video");
         ENGLISH.put("vault_audio", "Audio");
+        ENGLISH.put("vault_audio_seek", "Seek audio");
         ENGLISH.put("vault_sticker", "Sticker");
         ENGLISH.put("vault_gif", "GIF");
         ENGLISH.put("vault_file", "File");

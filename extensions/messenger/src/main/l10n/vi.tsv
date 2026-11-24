@@ -980,6 +980,7 @@ vault_text	Tin nhắn
 vault_photo	Ảnh
 vault_video	Video
 vault_audio	Âm thanh
+vault_audio_seek	Tua âm thanh
 vault_sticker	Nhãn dán
 vault_gif	GIF
 vault_file	Tệp

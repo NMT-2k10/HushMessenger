@@ -2,18 +2,24 @@ package app.hushmessenger.extension;
 
 import android.app.Dialog;
 import android.graphics.BitmapFactory;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.format.DateUtils;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.VideoView;
 import java.io.File;
+import java.io.FileInputStream;
 import java.text.DateFormat;
 import java.util.Date;
 import java.util.List;
@@ -61,8 +67,7 @@ final class VaultSheet {
             ui.postDelayed(this, 750);
         }
     };
-    private MediaPlayer player;
-    private File audioFile;
+    private AudioPreview audioPreview;
     private Dialog mediaDialog;
     private android.widget.TextView captureStatus;
 
@@ -111,15 +116,12 @@ final class VaultSheet {
     }
 
     private void stopAudio() {
-        if (player != null) {
-            try { player.stop(); } catch (RuntimeException ignored) {}
-            player.release();
-            player = null;
-        }
-        if (audioFile != null) {
-            audioFile.delete();
-            audioFile = null;
-        }
+        if (audioPreview != null) audioPreview.close();
+    }
+
+    void stopAudioPreview() {
+        mediaGeneration++;
+        stopAudio();
     }
 
     void showVault() {
@@ -389,7 +391,7 @@ final class VaultSheet {
                 } else if (Vault72h.KIND_VIDEO.equals(entry.kind)) {
                     playVideo(playable);
                 } else {
-                    playAudio(playable);
+                    playAudio(playable, entry.expiresAt);
                 }
             });
         });
@@ -501,30 +503,209 @@ final class VaultSheet {
         video.start();
     }
 
-    private void playAudio(File playable) {
+    private void playAudio(File playable, long expiresAt) {
         if (mediaDialog != null) mediaDialog.dismiss();
         stopAudio();
-        audioFile = playable;
-        try {
-            player = new MediaPlayer();
-            player.setDataSource(playable.getAbsolutePath());
-            player.setOnCompletionListener(done -> { if (player == done) stopAudio(); });
-            player.setOnErrorListener((media, what, extra) -> {
-                if (player != media) return true;
-                stopAudio();
-                VaultDiag.media("viewer", "audio_error");
-                page.feedback(page.text.get("vault_media_failed"), Toast.LENGTH_LONG);
+        audioPreview = new AudioPreview();
+        mediaDialog = audioPreview.sheet.dialog;
+        audioPreview.open(playable, expiresAt);
+    }
+
+    private final class AudioPreview {
+        final SettingsDialog sheet = new SettingsDialog(page, page.ui, page.text, page.text.get("vault_audio"), "");
+        final TextView time = page.ui.text(page.text.get("vault_media_pending"), 15, page.ui.text, false);
+        final SeekBar seekBar = new SeekBar(page);
+        final Button toggle = page.ui.primaryButton(page.text.get("link_player_play"));
+        final MediaPlayer media = new MediaPlayer();
+        final AudioManager audio = page.getSystemService(AudioManager.class);
+        final AudioAttributes attributes = new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build();
+        final AudioFocusRequest focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            .setAudioAttributes(attributes)
+            .setWillPauseWhenDucked(true)
+            .setOnAudioFocusChangeListener(this::focusChanged, ui)
+            .build();
+        final Runnable update = this::updateTime;
+        final Runnable expire = this::close;
+        int duration;
+        boolean playing;
+        boolean focused;
+        boolean dragging;
+        boolean seeking;
+
+        void open(File playable, long expiresAt) {
+            Button close = page.ui.button(page.text.get("vault_close"));
+            toggle.setEnabled(false);
+            toggle.setOnClickListener(clicked -> {
+                if (playing) pause();
+                else start();
+            });
+            close.setOnClickListener(clicked -> close());
+            sheet.dialog.setOnDismissListener(dismissed -> close());
+            sheet.dialog.setVolumeControlStream(AudioManager.STREAM_MUSIC);
+            seekBar.setEnabled(false);
+            seekBar.setContentDescription(page.text.get("vault_audio_seek"));
+            seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onStartTrackingTouch(SeekBar bar) {
+                    dragging = true;
+                }
+
+                @Override public void onProgressChanged(SeekBar bar, int position, boolean fromUser) {
+                    if (!fromUser) return;
+                    if (dragging) showTime(position);
+                    else seek(position);
+                }
+
+                @Override public void onStopTrackingTouch(SeekBar bar) {
+                    dragging = false;
+                    seek(bar.getProgress());
+                }
+            });
+            page.ui.add(sheet.body, time, 0);
+            page.ui.add(sheet.body, seekBar, 8);
+            sheet.action(close);
+            sheet.action(toggle);
+            sheet.show();
+            ui.postDelayed(expire, Math.max(0L, expiresAt - System.currentTimeMillis()));
+
+            media.setOnErrorListener((player, what, extra) -> {
+                fail("audio_error");
                 return true;
             });
-            player.setOnPreparedListener(prepared -> {
-                if (player != prepared) return;
-                prepared.start();
+            media.setOnPreparedListener(prepared -> {
+                if (audioPreview != this) return;
+                duration = Math.max(0, prepared.getDuration());
+                seekBar.setMax(duration);
+                seekBar.setKeyProgressIncrement(1000);
+                seekBar.setEnabled(duration > 0);
+                toggle.setEnabled(true);
                 VaultDiag.media("viewer", "audio_ready");
+                updateTime();
+                start();
             });
-            player.prepareAsync();
-        } catch (Exception unreadable) {
-            stopAudio();
-            page.feedback(page.text.get("vault_media_failed"), Toast.LENGTH_LONG);
+            media.setOnCompletionListener(done -> {
+                if (audioPreview != this) return;
+                playing = false;
+                releaseFocus();
+                toggle.setText(page.text.get("link_player_replay"));
+                ui.removeCallbacks(update);
+                if (!dragging) showPosition(duration);
+            });
+            media.setOnSeekCompleteListener(player -> {
+                if (audioPreview != this) return;
+                seeking = false;
+                updateTime();
+            });
+            try (FileInputStream input = new FileInputStream(playable)) {
+                media.setAudioAttributes(attributes);
+                media.setDataSource(input.getFD());
+                media.prepareAsync();
+            } catch (Exception unreadable) {
+                fail("audio_source_error");
+            } finally {
+                // MediaPlayer owns its descriptor now. Only the sealed copy remains on disk.
+                playable.delete();
+            }
+        }
+
+        private void start() {
+            if (audioPreview != this || !toggle.isEnabled()) return;
+            try {
+                if (audio != null && !focused) {
+                    focused = audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+                    if (!focused) {
+                        VaultDiag.media("viewer", "audio_focus_denied");
+                        page.feedback(page.text.get("message_log_clip_missing"), Toast.LENGTH_SHORT);
+                        return;
+                    }
+                }
+                media.start();
+                playing = true;
+                toggle.setText(page.text.get("link_player_pause"));
+                VaultDiag.media("viewer", "audio_started");
+                updateTime();
+            } catch (RuntimeException failure) {
+                fail("audio_start_error");
+            }
+        }
+
+        private void pause() {
+            try {
+                media.pause();
+                playing = false;
+                releaseFocus();
+                toggle.setText(page.text.get("link_player_play"));
+                updateTime();
+            } catch (RuntimeException failure) {
+                fail("audio_pause_error");
+            }
+        }
+
+        private void focusChanged(int change) {
+            if (audioPreview == this && playing && change < 0) pause();
+        }
+
+        private void seek(int position) {
+            if (audioPreview != this || !seekBar.isEnabled()) return;
+            try {
+                seeking = true;
+                media.seekTo(position, MediaPlayer.SEEK_CLOSEST);
+                if (!playing) toggle.setText(page.text.get("link_player_play"));
+                showPosition(position);
+                VaultDiag.media("viewer", "audio_seek");
+            } catch (RuntimeException failure) {
+                fail("audio_seek_error");
+            }
+        }
+
+        private void updateTime() {
+            ui.removeCallbacks(update);
+            if (audioPreview != this) return;
+            try {
+                if (!dragging && !seeking) showPosition(media.getCurrentPosition());
+                if (playing) ui.postDelayed(update, 250);
+            } catch (RuntimeException failure) {
+                fail("audio_position_error");
+            }
+        }
+
+        private void showPosition(int position) {
+            seekBar.setProgress(position);
+            showTime(position);
+        }
+
+        private void showTime(int position) {
+            long totalSeconds = (duration + 999L) / 1000;
+            long seconds = position >= duration ? totalSeconds : position / 1000;
+            String label = DateUtils.formatElapsedTime(seconds) + " / " + DateUtils.formatElapsedTime(totalSeconds);
+            if (!label.contentEquals(time.getText())) time.setText(label);
+        }
+
+        private void releaseFocus() {
+            if (focused) {
+                focused = false;
+                audio.abandonAudioFocusRequest(focus);
+            }
+        }
+
+        private void fail(String status) {
+            if (audioPreview != this) return;
+            VaultDiag.media("viewer", status);
+            close();
+            page.feedback(page.text.get("message_log_clip_missing"), Toast.LENGTH_LONG);
+        }
+
+        void close() {
+            if (audioPreview != this) return;
+            audioPreview = null;
+            ui.removeCallbacks(update);
+            ui.removeCallbacks(expire);
+            media.release();
+            releaseFocus();
+            if (mediaDialog == sheet.dialog) mediaDialog = null;
+            if (sheet.dialog.isShowing()) sheet.dialog.dismiss();
         }
     }
 
