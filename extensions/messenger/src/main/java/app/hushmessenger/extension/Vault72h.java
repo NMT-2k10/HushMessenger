@@ -124,7 +124,17 @@ public final class Vault72h {
     static final String SOURCE_ROW = "ROW";
 
     /** What the vault's screen can narrow the list to. */
-    enum Filter { ALL, RECALLED, MEDIA, STICKERS_GIFS, AUDIO_FILES }
+    enum Filter { ALL, RECALLED, MEDIA, STICKERS_GIFS, AUDIO_FILES, PHOTOS, VIDEOS, STICKERS, VOICE, RECALLED_TEXT }
+
+    enum Sort { NEWEST, OLDEST }
+
+    static final class PageKey {
+        final long receivedAt, rowId;
+        PageKey(Entry entry) {
+            receivedAt = entry.receivedAt;
+            rowId = entry.rowId;
+        }
+    }
 
     /** One archived message, with its sensitive fields already unsealed. */
     public static final class Entry {
@@ -141,6 +151,8 @@ public final class Vault72h {
         public final long sentAt;
         public final long receivedAt;
         public final long expiresAt;
+        /** Local time the recall was observed, or zero for entries archived before this was recorded. */
+        public final long recalledAt;
         public final String status;
         public final String source;
         public final String mediaName;
@@ -157,7 +169,7 @@ public final class Vault72h {
         Entry(long rowId, String msgId, String thread, String sender, String chat, long senderId, String kind,
               String text, String editedFrom, long sentAt, long receivedAt, long expiresAt, String status,
               String source, String mediaName, String mediaKind, String mediaStatus, long mediaBytes,
-              String diag) {
+              String diag, long recalledAt) {
             this.rowId = rowId;
             this.msgId = msgId;
             this.thread = thread;
@@ -170,6 +182,7 @@ public final class Vault72h {
             this.sentAt = sentAt;
             this.receivedAt = receivedAt;
             this.expiresAt = expiresAt;
+            this.recalledAt = recalledAt;
             this.status = status;
             this.source = source;
             this.mediaName = mediaName;
@@ -180,6 +193,7 @@ public final class Vault72h {
         }
 
         public boolean recalled() { return STATUS_RECALLED.equals(status); }
+        boolean hasRecalledText() { return recalled() && KIND_TEXT.equals(kind) && !text.isEmpty(); }
         public boolean hasMedia() { return MEDIA_STORED.equals(mediaStatus) && !mediaName.isEmpty(); }
         /** Milliseconds of life left at [now]; never negative in a list, since expired entries are filtered out. */
         public long remainingMs(long now) { return Math.max(0, expiresAt - now); }
@@ -491,6 +505,9 @@ public final class Vault72h {
                 + "id_hash TEXT NOT NULL, row_id INTEGER NOT NULL, PRIMARY KEY(id_hash,row_id))");
             db.execSQL("CREATE TABLE IF NOT EXISTS vault_pending_recall ("
                 + "id_hash TEXT PRIMARY KEY NOT NULL, expires_at INTEGER NOT NULL)");
+            db.execSQL("CREATE TABLE IF NOT EXISTS vault_recall_times ("
+                + "row_id INTEGER PRIMARY KEY, recalled_at INTEGER NOT NULL)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_vault_received ON entries(received_at,row_id)");
             pruneIdentities(db);
         }
     }
@@ -953,6 +970,7 @@ public final class Vault72h {
     private static void pruneIdentities(SQLiteDatabase db) {
         db.execSQL("DELETE FROM vault_video_identity WHERE row_id NOT IN (SELECT row_id FROM entries)");
         db.execSQL("DELETE FROM vault_recall_alias WHERE row_id NOT IN (SELECT row_id FROM entries)");
+        db.execSQL("DELETE FROM vault_recall_times WHERE row_id NOT IN (SELECT row_id FROM entries)");
     }
 
     private static void enqueueResolved(String id, String thread, MessageLogAttachment.Found found, String diag,
@@ -1212,7 +1230,7 @@ public final class Vault72h {
         // Merge into the existing entry.
         Cursor row = db.query("entries",
             new String[] {"body", "edited_from", "status", "sender", "chat", "thread", "kind", "media_status",
-                "msg_id", "dedup", "diag"},
+                "msg_id", "dedup", "diag", "sender_id"},
             "row_id=?", new String[] {String.valueOf(existing)}, null, null, null, "1");
         try {
             if (!row.moveToFirst()) {
@@ -1247,6 +1265,7 @@ public final class Vault72h {
                 values.put("chat", sealText(chat));
             }
             if ((row.getString(5) == null || row.getString(5).isEmpty()) && !thread.isEmpty()) values.put("thread", thread);
+            if (row.getLong(11) == 0 && senderId > 0) values.put("sender_id", senderId);
             String oldKind = row.getString(6);
             if ((KIND_TEXT.equals(oldKind) || KIND_ATTACHMENT.equals(oldKind))
                 && (KIND_PHOTO.equals(kind) || KIND_VIDEO.equals(kind) || KIND_AUDIO.equals(kind))) {
@@ -1498,7 +1517,7 @@ public final class Vault72h {
                 SQLiteDatabase db = db(context);
                 long now = clock.getAsLong();
                 long row = recallTargetLocked(db, id, now);
-                if (row > 0) return markRecallRowLocked(db, row);
+                if (row > 0) return markRecallRowLocked(db, row, now);
                 if (row == 0) {
                     db.delete("vault_pending_recall", "expires_at<=?", new String[] {String.valueOf(now)});
                     ContentValues pending = new ContentValues();
@@ -1554,18 +1573,28 @@ public final class Vault72h {
                         else if (rows.getCount() > 1) VaultDiag.media("recall", "ambiguous_row");
                     }
                 }
-                if (matched > 0) markRecallRowLocked(db, matched);
+                if (matched > 0) markRecallRowLocked(db, matched, now);
             } catch (RuntimeException failure) {
                 VaultDiag.media("recall", "row_error");
             }
         }
     }
 
-    private static boolean markRecallRowLocked(SQLiteDatabase db, long rowId) {
-        ContentValues values = new ContentValues();
-        values.put("status", STATUS_RECALLED);
-        if (db.update("entries", values, "row_id=? AND status!=?",
-            new String[] {String.valueOf(rowId), STATUS_RECALLED}) == 0) return false;
+    private static boolean markRecallRowLocked(SQLiteDatabase db, long rowId, long recalledAt) {
+        db.beginTransaction();
+        try {
+            ContentValues values = new ContentValues();
+            values.put("status", STATUS_RECALLED);
+            if (db.update("entries", values, "row_id=? AND status!=?",
+                new String[] {String.valueOf(rowId), STATUS_RECALLED}) == 0) return false;
+            ContentValues time = new ContentValues();
+            time.put("row_id", rowId);
+            time.put("recalled_at", recalledAt);
+            db.insertOrThrow("vault_recall_times", null, time);
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
         REVISION.incrementAndGet();
         VaultDiag.media("recall", "marked");
         return true;
@@ -1590,11 +1619,14 @@ public final class Vault72h {
     private static void applyPendingRecallLocked(SQLiteDatabase db, long rowId, String id, long now) {
         if (!validRecallId(id)) return;
         String hash = MessageLog.digest(id);
+        long expiry;
         try (Cursor pending = db.query("vault_pending_recall", new String[] {"expires_at"}, "id_hash=?",
             new String[] {hash}, null, null, null, "1")) {
-            if (!pending.moveToFirst() || pending.getLong(0) <= now || recallTargetLocked(db, id, now) != rowId) return;
+            if (!pending.moveToFirst()) return;
+            expiry = pending.getLong(0);
         }
-        markRecallRowLocked(db, rowId);
+        if (expiry <= now || recallTargetLocked(db, id, now) != rowId) return;
+        markRecallRowLocked(db, rowId, expiry - RECALL_WAIT_MS);
         db.delete("vault_pending_recall", "id_hash=?", new String[] {hash});
     }
 
@@ -1602,21 +1634,32 @@ public final class Vault72h {
 
     private static final String[] COLUMNS = {"row_id", "msg_id", "thread", "sender", "chat", "sender_id", "kind",
         "body", "edited_from", "sent_at", "received_at", "expires_at", "status", "source", "media_name",
-        "media_kind", "media_status", "media_bytes", "diag"};
+        "media_kind", "media_status", "media_bytes", "diag",
+        "(SELECT recalled_at FROM vault_recall_times WHERE row_id=entries.row_id) AS recalled_at"};
 
     private static Entry readEntry(Cursor row) {
         return new Entry(row.getLong(0), row.getString(1), row.getString(2) == null ? "" : row.getString(2),
             openText(row.getBlob(3)), openText(row.getBlob(4)), row.getLong(5), row.getString(6),
             openText(row.getBlob(7)), openText(row.getBlob(8)), row.getLong(9), row.getLong(10), row.getLong(11),
             row.getString(12), row.getString(13), row.getString(14), row.getString(15), row.getString(16),
-            row.getLong(17), row.getString(18));
+            row.getLong(17), row.getString(18), row.getLong(19));
     }
 
     static Entry currentMedia(Context context, long rowId) {
+        return currentEntry(context, rowId, true);
+    }
+
+    static Entry currentRecalledText(Context context, long rowId) {
+        Entry entry = currentEntry(context, rowId, false);
+        return entry != null && entry.hasRecalledText() ? entry : null;
+    }
+
+    private static Entry currentEntry(Context context, long rowId, boolean media) {
         synchronized (LOCK) {
             try (Cursor row = db(context).query("entries", COLUMNS,
-                "row_id=? AND expires_at>? AND media_status=?",
-                new String[] {String.valueOf(rowId), String.valueOf(clock.getAsLong()), MEDIA_STORED},
+                "row_id=? AND expires_at>?" + (media ? " AND media_status=?" : " AND status=? AND kind=?"),
+                media ? new String[] {String.valueOf(rowId), String.valueOf(clock.getAsLong()), MEDIA_STORED}
+                    : new String[] {String.valueOf(rowId), String.valueOf(clock.getAsLong()), STATUS_RECALLED, KIND_TEXT},
                 null, null, null, "1")) {
                 return row.moveToFirst() ? readEntry(row) : null;
             } catch (Exception failure) {
@@ -1632,6 +1675,12 @@ public final class Vault72h {
      * purge schedule has or hasn't done.
      */
     static List<Entry> entries(Filter filter, String thread, String query, long now) {
+        return entries(filter, thread, query, Sort.NEWEST, null, Integer.MAX_VALUE, now, () -> false);
+    }
+
+    /** Reads a page in stable time/row order. Search stays in memory over the sealed fields. */
+    static List<Entry> entries(Filter filter, String thread, String query, Sort sort, PageKey after, int limit,
+                               long now, java.util.function.BooleanSupplier cancelled) {
         Context context = Settings.appContext;
         List<Entry> out = new ArrayList<>();
         if (context == null) return out;
@@ -1642,17 +1691,33 @@ public final class Vault72h {
                 StringBuilder where = new StringBuilder("expires_at>?");
                 List<String> args = new ArrayList<>();
                 args.add(String.valueOf(now));
-                if (filter == Filter.RECALLED) where.append(" AND status='").append(STATUS_RECALLED).append("'");
+                if (filter == Filter.RECALLED || filter == Filter.RECALLED_TEXT) {
+                    where.append(" AND status='").append(STATUS_RECALLED).append("'");
+                }
+                if (filter == Filter.RECALLED_TEXT) where.append(" AND kind='TEXT' AND body IS NOT NULL");
+                else if (filter == Filter.PHOTOS) where.append(" AND kind='PHOTO'");
+                else if (filter == Filter.VIDEOS) where.append(" AND kind='VIDEO'");
+                else if (filter == Filter.STICKERS) where.append(" AND kind IN ('STICKER','GIF')");
+                else if (filter == Filter.VOICE) where.append(" AND kind='AUDIO'");
                 else if (filter == Filter.MEDIA) where.append(" AND kind IN ('").append(KIND_PHOTO).append("','").append(KIND_VIDEO).append("')");
                 else if (filter == Filter.STICKERS_GIFS) where.append(" AND kind IN ('").append(KIND_STICKER).append("','").append(KIND_GIF).append("')");
                 else if (filter == Filter.AUDIO_FILES) where.append(" AND kind IN ('").append(KIND_AUDIO).append("','").append(KIND_FILE).append("')");
                 if (thread != null) { where.append(" AND thread=?"); args.add(thread); }
+                if (after != null) {
+                    String direction = sort == Sort.OLDEST ? ">" : "<";
+                    where.append(" AND (received_at,row_id) ").append(direction).append(" (?,?)");
+                    args.add(String.valueOf(after.receivedAt));
+                    args.add(String.valueOf(after.rowId));
+                }
+                String needle = query == null ? "" : query.trim().toLowerCase(java.util.Locale.ROOT);
+                String order = sort == Sort.OLDEST ? "received_at ASC,row_id ASC" : "received_at DESC,row_id DESC";
                 Cursor rows = db.query("entries", COLUMNS, where.toString(),
-                    args.toArray(new String[0]), null, null, "received_at DESC");
+                    args.toArray(new String[0]), null, null, order,
+                    needle.isEmpty() && filter != Filter.RECALLED_TEXT ? String.valueOf(limit) : null);
                 try {
-                    String needle = query == null ? "" : query.trim().toLowerCase(java.util.Locale.ROOT);
-                    while (rows.moveToNext()) {
+                    while (out.size() < limit && !cancelled.getAsBoolean() && rows.moveToNext()) {
                         Entry entry = readEntry(rows);
+                        if (filter == Filter.RECALLED_TEXT && !entry.hasRecalledText()) continue;
                         if (!needle.isEmpty()
                             && !entry.text.toLowerCase(java.util.Locale.ROOT).contains(needle)
                             && !entry.sender.toLowerCase(java.util.Locale.ROOT).contains(needle)
