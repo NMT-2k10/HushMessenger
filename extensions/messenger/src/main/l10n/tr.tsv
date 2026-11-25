@@ -981,6 +981,16 @@ vault_photo	Fotoğraf
 vault_video	Video
 vault_audio	Ses
 vault_audio_seek	Sesin oynatma konumunu değiştir
+vault_filter_text	Metin
+vault_filter_voice	Sesli mesajlar
+vault_more_filters	Diğer filtreler
+vault_sort_newest	Önce en yeniler
+vault_sort_oldest	Önce en eskiler
+vault_saved_at	Kaydedilme: %1$s
+vault_recalled_at	Geri alınma: %1$s
+vault_copy_text	Kopyala
+vault_text_copied	Metin kopyalandı
+vault_text_unavailable	Bu metin artık kullanılamıyor.
 vault_sticker	Çıkartma
 vault_gif	GIF
 vault_file	Dosya

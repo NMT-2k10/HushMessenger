@@ -1,6 +1,8 @@
 package app.hushmessenger.extension;
 
 import android.app.Dialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.graphics.BitmapFactory;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
@@ -8,12 +10,14 @@ import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PersistableBundle;
 import android.text.format.DateUtils;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -21,7 +25,9 @@ import android.widget.VideoView;
 import java.io.File;
 import java.io.FileInputStream;
 import java.text.DateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -34,7 +40,8 @@ import java.util.concurrent.Executors;
  * out and whether it was recalled or edited, and a kept photo, video or voice clip opens from here.
  */
 final class VaultSheet {
-    private static final int PAGE = 50;
+    private static final int PAGE = 32;
+    private static final int MAX_THUMBNAIL_INPUT = 4 * 1024 * 1024;
     private static final ExecutorService WORK = Executors.newSingleThreadExecutor(work -> {
         Thread thread = new Thread(work, "HushVaultScreen");
         thread.setDaemon(true);
@@ -50,16 +57,22 @@ final class VaultSheet {
     private Dialog dialog;
     private android.widget.ScrollView scroll;
     private LinearLayout list;
+    private TextView total;
+    private Button sortButton, moreFilters;
+    private final EnumMap<Vault72h.Filter, Button> chips = new EnumMap<>(Vault72h.Filter.class);
+    private final List<Vault72h.PageKey> pageStarts = new ArrayList<>();
+    private int pageIndex;
     private Vault72h.Filter filter = Vault72h.Filter.ALL;
+    private Vault72h.Sort sort = Vault72h.Sort.NEWEST;
     private boolean byChat;
     private String thread;
     private String query = "";
-    private int shown = PAGE;
     private volatile long generation;
     private volatile long mediaGeneration;
     private long displayedRevision;
     private boolean loading;
     private final Handler ui = new Handler(Looper.getMainLooper());
+    private final Runnable searchUpdate = this::load;
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
             if (dialog == null || !dialog.isShowing()) return;
@@ -130,48 +143,88 @@ final class VaultSheet {
         byChat = false;
         thread = null;
         query = "";
-        shown = PAGE;
+        sort = Vault72h.Sort.NEWEST;
+        resetPaging();
+        chips.clear();
         SettingsDialog sheet = new SettingsDialog(page, page.ui, page.text,
-            page.text.get("vault_title"), page.text.get("vault_hint"));
+            page.text.get("vault_title"), "");
+        total = page.ui.text("", 13, page.ui.muted, false);
+        total.setTag("vault_stats");
+        sheet.addHeader(total, 4);
         String blocked = captureBlockCaption();
-        if (!blocked.isEmpty()) page.ui.add(sheet.body, page.ui.text(blocked, 13, page.ui.warning, false), 0);
+        if (!blocked.isEmpty()) sheet.addHeader(page.ui.notice(blocked, true), 8);
         dialog = sheet.dialog;
         scroll = sheet.scroll;
         dialog.setOnDismissListener(dismissed -> {
             if (dialog == dismissed) {
                 ui.removeCallbacks(refresh);
+                ui.removeCallbacks(searchUpdate);
                 mediaGeneration++;
                 stopAudio();
                 if (mediaDialog != null) mediaDialog.dismiss();
                 dialog = null;
                 scroll = null;
                 list = null;
+                total = null;
+                chips.clear();
+                pageStarts.clear();
+                sortButton = null;
+                moreFilters = null;
                 generation++;
             }
         });
-        EditText search = page.ui.field(page.text.get("vault_search_hint"), 0, true);
+        EditText search = page.ui.field(page.text.get("vault_search_hint"), Vault72h.MAX_TEXT_CHARS, true);
         search.setTag("vault_search");
         search.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
             @Override public void afterTextChanged(android.text.Editable s) {
                 query = s == null ? "" : s.toString();
-                shown = PAGE;
-                load();
+                resetPaging();
+                generation++;
+                loading = true;
+                ui.removeCallbacks(searchUpdate);
+                ui.postDelayed(searchUpdate, 220);
             }
         });
-        sheet.body.addView(search);
+        sheet.addHeader(search, 10);
         LinearLayout filters = page.ui.row();
         filters.setTag("vault_filters");
-        addFilter(filters, "vault_filter_all", Vault72h.Filter.ALL, false);
-        addFilter(filters, "vault_filter_recalled", Vault72h.Filter.RECALLED, false);
-        addFilter(filters, "vault_filter_media", Vault72h.Filter.MEDIA, false);
-        addFilter(filters, "vault_filter_stickers", Vault72h.Filter.STICKERS_GIFS, false);
-        addFilter(filters, "vault_filter_audio_files", Vault72h.Filter.AUDIO_FILES, false);
-        addFilter(filters, "vault_filter_conversations", null, true);
+        addFilter(filters, "vault_filter_all", Vault72h.Filter.ALL);
+        addFilter(filters, "vault_filter_text", Vault72h.Filter.RECALLED_TEXT);
+        addFilter(filters, "vault_photo", Vault72h.Filter.PHOTOS);
+        addFilter(filters, "vault_video", Vault72h.Filter.VIDEOS);
+        addFilter(filters, "vault_sticker", Vault72h.Filter.STICKERS);
+        addFilter(filters, "vault_filter_voice", Vault72h.Filter.VOICE);
         android.widget.HorizontalScrollView scroller = new android.widget.HorizontalScrollView(page);
         scroller.addView(filters);
-        sheet.body.addView(scroller);
+        sheet.addHeader(scroller, 8);
+        LinearLayout options = page.ui.row();
+        if (page.ui.largeText) options.setOrientation(LinearLayout.VERTICAL);
+        sortButton = page.ui.button(page.text.get("vault_sort_newest"));
+        sortButton.setTag("vault_sort");
+        sortButton.setOnClickListener(clicked -> {
+            PopupMenu menu = new PopupMenu(page, sortButton);
+            menu.getMenu().add(0, 1, 0, page.text.get("vault_sort_newest")).setCheckable(true)
+                .setChecked(sort == Vault72h.Sort.NEWEST);
+            menu.getMenu().add(0, 2, 1, page.text.get("vault_sort_oldest")).setCheckable(true)
+                .setChecked(sort == Vault72h.Sort.OLDEST);
+            menu.setOnMenuItemClickListener(item -> {
+                sort = item.getItemId() == 1 ? Vault72h.Sort.NEWEST : Vault72h.Sort.OLDEST;
+                sortButton.setText(item.getTitle());
+                resetPaging();
+                load();
+                return true;
+            });
+            menu.show();
+        });
+        moreFilters = page.ui.button(page.text.get("vault_more_filters"));
+        moreFilters.setTag("vault_more_filters");
+        moreFilters.setOnClickListener(clicked -> showMoreFilters());
+        options.addView(sortButton, optionParams(false));
+        options.addView(moreFilters, optionParams(true));
+        sheet.addHeader(options, 8);
+        updateSelectedFilters();
         list = page.ui.column();
         list.setTag("vault_list");
         sheet.body.addView(list);
@@ -184,22 +237,73 @@ final class VaultSheet {
         close.setOnClickListener(clicked -> dialog.dismiss());
         sheet.action(close);
         sheet.show();
+        sheet.setFocusableInTouchMode(true);
+        sheet.requestFocus();
         load();
         ui.postDelayed(refresh, 750);
     }
 
-    private void addFilter(LinearLayout row, String key, Vault72h.Filter target, boolean chats) {
+    private LinearLayout.LayoutParams optionParams(boolean second) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(page.ui.largeText ? -1 : 0, -2,
+            page.ui.largeText ? 0 : 1);
+        if (second) {
+            if (page.ui.largeText) params.topMargin = page.ui.dp(6);
+            else params.setMarginStart(page.ui.dp(8));
+        }
+        return params;
+    }
+
+    private void addFilter(LinearLayout row, String key, Vault72h.Filter target) {
         Button button = page.ui.button(page.text.get(key));
         button.setTag(key);
-        button.setOnClickListener(clicked -> {
-            byChat = chats;
-            if (target != null) filter = target;
-            shown = PAGE;
-            load();
-        });
+        button.setOnClickListener(clicked -> selectFilter(target));
+        chips.put(target, button);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
-        params.setMarginStart(page.ui.dp(8));
+        if (row.getChildCount() > 0) params.setMarginStart(page.ui.dp(8));
         row.addView(button, params);
+    }
+
+    private void updateSelectedFilters() {
+        chips.forEach((kind, button) -> styleFilter(button, !byChat && kind == filter));
+        styleFilter(moreFilters, byChat || !chips.containsKey(filter));
+    }
+
+    private void styleFilter(Button button, boolean selected) {
+        button.setSelected(selected);
+        button.setTextColor(selected ? page.ui.onAccent : page.ui.heading);
+        button.setBackground(selected ? page.ui.interactive(page.ui.accentFill, 0, 12)
+            : page.ui.interactive(page.ui.card, page.ui.line, 12, page.ui.heading, 2));
+    }
+
+    private void selectFilter(Vault72h.Filter target) {
+        byChat = target == null;
+        if (target != null) filter = target;
+        resetPaging();
+        updateSelectedFilters();
+        load();
+    }
+
+    private void showMoreFilters() {
+        PopupMenu menu = new PopupMenu(page, moreFilters);
+        String[] keys = {"vault_filter_recalled", "vault_filter_media", "vault_filter_stickers",
+            "vault_filter_audio_files", "vault_filter_conversations"};
+        Vault72h.Filter[] targets = {Vault72h.Filter.RECALLED, Vault72h.Filter.MEDIA, Vault72h.Filter.STICKERS_GIFS,
+            Vault72h.Filter.AUDIO_FILES, null};
+        for (int i = 0; i < keys.length; i++) {
+            menu.getMenu().add(0, i, i, page.text.get(keys[i])).setCheckable(true)
+                .setChecked(byChat ? targets[i] == null : targets[i] == filter);
+        }
+        menu.setOnMenuItemClickListener(item -> {
+            selectFilter(targets[item.getItemId()]);
+            return true;
+        });
+        menu.show();
+    }
+
+    private void resetPaging() {
+        pageStarts.clear();
+        pageStarts.add(null);
+        pageIndex = 0;
     }
 
     /** Reads the vault off the main thread and renders what it finds. */
@@ -209,49 +313,48 @@ final class VaultSheet {
 
     private void load(boolean preserveScroll) {
         if (list == null) return;
+        ui.removeCallbacks(searchUpdate);
         final long mine = ++generation;
         loading = true;
         final Vault72h.Filter wanted = filter;
         final boolean chats = byChat;
         final String keptThread = thread, keptQuery = query;
-        final int keepShown = shown;
+        final Vault72h.Sort wantedSort = sort;
+        final Vault72h.PageKey after = pageStarts.get(pageIndex);
         WORK.execute(() -> {
             if (mine != generation) return;
             long revision = Vault72h.revision();
             long now = System.currentTimeMillis();
             Vault72h.Stats stats = Vault72h.stats(now);
-            List<Vault72h.Entry> entries = chats ? null : Vault72h.entries(wanted, keptThread, keptQuery, now);
+            List<Vault72h.Entry> entries = chats ? null
+                : Vault72h.entries(wanted, keptThread, keptQuery, wantedSort, after, PAGE + 1, now, () -> mine != generation);
             List<String[]> conversations = chats ? Vault72h.conversations(now) : null;
             page.runOnUiThread(() -> {
                 if (dialog == null || mine != generation || list == null) return;
                 loading = false;
                 displayedRevision = revision;
+                String nextExpiry = stats.nextExpiryAt > 0 ? when(stats.nextExpiryAt) : "—";
+                total.setText(page.text.get("vault_stats", stats.entries, stats.recalled, stats.mediaStored, nextExpiry));
                 int scrollY = preserveScroll ? scroll.getScrollY() : 0;
-                render(stats, entries, conversations, keepShown, now);
+                render(stats, entries, conversations);
                 if (preserveScroll && scrollY > 0) {
                     scroll.post(() -> {
                         if (mine == generation && scroll != null) scroll.scrollTo(0, scrollY);
                     });
-                }
+                } else if (!preserveScroll) scroll.scrollTo(0, 0);
             });
         });
     }
 
-    private void render(Vault72h.Stats stats, List<Vault72h.Entry> entries, List<String[]> conversations,
-                        int keepShown, long now) {
+    private void render(Vault72h.Stats stats, List<Vault72h.Entry> entries, List<String[]> conversations) {
         list.removeAllViews();
-        String next = stats.nextExpiryAt > 0 ? when(stats.nextExpiryAt) : "—";
-        TextView statsLine = page.ui.text(page.text.get("vault_stats", stats.entries, stats.recalled,
-            stats.mediaStored, next), 13, page.ui.muted, false);
-        statsLine.setTag("vault_stats");
-        page.ui.add(list, statsLine, 4);
+        if (thread != null) {
+            Button all = page.ui.button(page.text.get("vault_all_chats"));
+            all.setTag("vault_all_chats");
+            all.setOnClickListener(clicked -> { thread = null; selectFilter(filter); });
+            page.ui.add(list, all, 8);
+        }
         if (conversations != null) {
-            if (thread != null) {
-                Button all = page.ui.button(page.text.get("vault_all_chats"));
-                all.setTag("vault_all_chats");
-                all.setOnClickListener(clicked -> { thread = null; byChat = false; load(); });
-                page.ui.add(list, all, 8);
-            }
             if (conversations.isEmpty()) {
                 page.ui.add(list, page.ui.text(page.text.get("vault_empty"), 14, page.ui.muted, false), 12);
                 return;
@@ -261,7 +364,7 @@ final class VaultSheet {
                     + page.text.get("vault_conversation_count", Integer.parseInt(chat[2])));
                 row.setTag("vault_conversation");
                 final String picked = chat[0];
-                row.setOnClickListener(clicked -> { thread = picked; byChat = false; load(); });
+                row.setOnClickListener(clicked -> { thread = picked; selectFilter(filter); });
                 page.ui.add(list, row, 8);
             }
             return;
@@ -272,37 +375,81 @@ final class VaultSheet {
             page.ui.add(list, page.ui.text(
                 page.text.get(stats.entries > 0 ? "vault_empty_category" : "vault_empty"),
                 14, page.ui.muted, false), 12);
-            return;
+        } else {
+            for (int i = 0; i < Math.min(PAGE, entries.size()); i++) page.ui.add(list, card(entries.get(i)), 10);
         }
-        int limit = Math.min(keepShown, entries.size());
-        for (int i = 0; i < limit; i++) page.ui.add(list, card(entries.get(i), now), 10);
-        if (entries.size() > limit) {
-            Button more = page.ui.button(page.text.get("vault_more"));
-            more.setTag("vault_more");
-            more.setOnClickListener(clicked -> { shown += PAGE; load(); });
-            page.ui.add(list, more, 10);
+        if (pageIndex > 0 || (entries != null && entries.size() > PAGE)) {
+            LinearLayout pagination = page.ui.row();
+            if (page.ui.largeText) pagination.setOrientation(LinearLayout.VERTICAL);
+            if (pageIndex > 0) {
+                Button back = page.ui.button(page.text.get("back"));
+                back.setTag("vault_previous_page");
+                back.setOnClickListener(clicked -> {
+                    if (loading) return;
+                    pageStarts.remove(pageIndex--);
+                    load();
+                });
+                pagination.addView(back, optionParams(false));
+            }
+            if (entries != null && entries.size() > PAGE) {
+                Button next = page.ui.button(page.text.get("vault_more"));
+                next.setTag("vault_more");
+                next.setOnClickListener(clicked -> {
+                    if (loading) return;
+                    pageStarts.add(new Vault72h.PageKey(entries.get(PAGE - 1)));
+                    pageIndex++;
+                    load();
+                });
+                pagination.addView(next, optionParams(pagination.getChildCount() > 0));
+            }
+            page.ui.add(list, pagination, 10);
         }
     }
 
-    private View card(Vault72h.Entry entry, long now) {
+    private View card(Vault72h.Entry entry) {
         LinearLayout card = page.ui.panel();
         card.setTag("vault_entry");
-        String who = !entry.chat.isEmpty() ? entry.chat : !entry.sender.isEmpty() ? entry.sender
-            : entry.senderId > 0 ? String.valueOf(entry.senderId) : page.text.get("vault_unknown_sender");
-        if (!entry.sender.isEmpty() && !entry.chat.isEmpty()) who = entry.sender + " · " + entry.chat;
-        page.ui.add(card, page.ui.text(who, 15, page.ui.text, true), 0);
+        TextView heading = page.ui.text(sourceLabel(entry), 16, page.ui.text, true);
+        heading.setMaxLines(2);
+        heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        page.ui.add(card, heading, 0);
         StringBuilder meta = new StringBuilder(kindLabel(entry.kind));
         meta.append(" · ").append(when(entry.receivedAt));
         meta.append(" · ").append(page.text.get("vault_expires", when(entry.expiresAt)));
         if (entry.recalled()) meta.append(" · ").append(page.text.get("vault_recalled"));
         if (Vault72h.STATUS_EDITED.equals(entry.status)) meta.append(" · ").append(page.text.get("vault_edited"));
-        page.ui.add(card, page.ui.text(meta.toString(), 13, page.ui.muted, false), 4);
-        if (!entry.text.isEmpty()) page.ui.add(card, page.ui.text(entry.text, 15, page.ui.text, false), 6);
+        TextView metadata = page.ui.text(meta.toString(), 13, page.ui.muted, false);
+        addKindIcon(metadata, entry.kind);
+        page.ui.add(card, metadata, 4);
+        if (!entry.text.isEmpty()) {
+            TextView preview = page.ui.text(entry.text, 15, page.ui.text, false);
+            if (entry.hasRecalledText() || !Vault72h.KIND_TEXT.equals(entry.kind)) {
+                preview.setMaxLines(3);
+                preview.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            }
+            preview.setTag("vault_preview");
+            page.ui.add(card, preview, 6);
+        }
+        if (entry.hasRecalledText()) {
+            Button read = page.ui.button(page.text.get("open"));
+            read.setTag("vault_open_text");
+            read.setOnClickListener(clicked -> openRecalledText(entry.rowId));
+            page.ui.add(card, read, 8);
+        }
         if (!entry.editedFrom.isEmpty()) {
             page.ui.add(card, page.ui.text(page.text.get("vault_edited_from", entry.editedFrom), 13, page.ui.muted, false), 4);
         }
+        if (entry.hasMedia() && entry.mediaBytes <= MAX_THUMBNAIL_INPUT
+            && (Vault72h.KIND_PHOTO.equals(entry.kind) || Vault72h.KIND_STICKER.equals(entry.kind)
+                || Vault72h.KIND_GIF.equals(entry.kind))) {
+            addThumbnail(card, entry);
+        }
         if (!Vault72h.MEDIA_NONE.equals(entry.mediaStatus)) {
-            page.ui.add(card, page.ui.text(mediaLabel(entry.mediaStatus), 13, page.ui.muted, false), 6);
+            String preview = mediaLabel(entry.mediaStatus);
+            if (entry.hasMedia() && entry.mediaBytes > 0) {
+                preview += " · " + android.text.format.Formatter.formatShortFileSize(page, entry.mediaBytes);
+            }
+            page.ui.add(card, page.ui.text(preview, 13, page.ui.muted, false), 6);
             if (entry.hasMedia()) {
                 LinearLayout media = page.ui.row();
                 Button open = page.ui.button(page.text.get("vault_open_media"));
@@ -326,6 +473,125 @@ final class VaultSheet {
             page.ui.add(card, page.ui.text(entry.diag, 11, page.ui.muted, false), 2);
         }
         return card;
+    }
+
+    private void addThumbnail(LinearLayout card, Vault72h.Entry entry) {
+        ImageView image = new ImageView(page);
+        image.setScaleType(ImageView.ScaleType.FIT_START);
+        image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        image.setVisibility(View.GONE);
+        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(-1, page.ui.dp(92));
+        size.topMargin = page.ui.dp(8);
+        card.addView(image, size);
+        int pixels = page.ui.dp(160);
+        long request = generation;
+        WORK.execute(() -> {
+            if (request != generation || entry.expiresAt <= Vault72h.clock.getAsLong()) return;
+            byte[] bytes = Vault72h.openMedia(page, entry);
+            if (bytes == null || bytes.length == 0) return;
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
+            if (options.outWidth <= 0 || options.outHeight <= 0) return;
+            options.inJustDecodeBounds = false;
+            options.inSampleSize = Integer.highestOneBit(Math.max(1, Math.max(options.outWidth, options.outHeight) / pixels));
+            android.graphics.Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
+            if (bitmap == null) return;
+            page.runOnUiThread(() -> {
+                if (request != generation || entry.expiresAt <= Vault72h.clock.getAsLong()) return;
+                image.setImageBitmap(bitmap);
+                image.setVisibility(View.VISIBLE);
+            });
+        });
+    }
+
+    private String sourceLabel(Vault72h.Entry entry) {
+        if (!entry.sender.isEmpty() && !entry.chat.isEmpty() && !entry.sender.equals(entry.chat)) {
+            return entry.sender + " · " + entry.chat;
+        }
+        if (!entry.chat.isEmpty()) return entry.chat;
+        if (!entry.sender.isEmpty()) return entry.sender;
+        if (entry.senderId > 0) return String.valueOf(entry.senderId);
+        return entry.thread.isEmpty() ? page.text.get("vault_unknown_sender") : entry.thread;
+    }
+
+    private void addKindIcon(TextView view, String kind) {
+        int icon;
+        switch (kind) {
+            case Vault72h.KIND_TEXT: icon = android.R.drawable.ic_menu_edit; break;
+            case Vault72h.KIND_VIDEO: icon = android.R.drawable.ic_media_play; break;
+            case Vault72h.KIND_AUDIO: icon = android.R.drawable.ic_btn_speak_now; break;
+            case Vault72h.KIND_PHOTO:
+            case Vault72h.KIND_STICKER:
+            case Vault72h.KIND_GIF: icon = android.R.drawable.ic_menu_gallery; break;
+            default: return;
+        }
+        android.graphics.drawable.Drawable glyph = page.getDrawable(icon).mutate();
+        glyph.setTint(page.ui.muted);
+        glyph.setBounds(0, 0, page.ui.dp(16), page.ui.dp(16));
+        view.setCompoundDrawablePadding(page.ui.dp(6));
+        view.setCompoundDrawablesRelative(glyph, null, null, null);
+    }
+
+    private void openRecalledText(long rowId) {
+        long request = ++mediaGeneration;
+        PLAYBACK.execute(() -> {
+            if (request != mediaGeneration) return;
+            Vault72h.Entry entry = Vault72h.currentRecalledText(page, rowId);
+            page.runOnUiThread(() -> {
+                if (!currentMediaRequest(request)) return;
+                if (entry == null || entry.expiresAt <= Vault72h.clock.getAsLong()) {
+                    page.feedback(page.text.get("vault_text_unavailable"), Toast.LENGTH_SHORT);
+                    return;
+                }
+                showRecalledText(entry);
+            });
+        });
+    }
+
+    private void showRecalledText(Vault72h.Entry entry) {
+        if (mediaDialog != null) mediaDialog.dismiss();
+        stopAudio();
+        SettingsDialog detail = new SettingsDialog(page, page.ui, page.text, page.text.get("vault_filter_text"),
+            sourceLabel(entry));
+        page.ui.add(detail.body, page.ui.text(page.text.get("vault_saved_at", when(entry.receivedAt)),
+            13, page.ui.muted, false), 0);
+        String recalled = entry.recalledAt > 0 ? page.text.get("vault_recalled_at", when(entry.recalledAt))
+            : page.text.get("vault_recalled");
+        page.ui.add(detail.body, page.ui.text(recalled, 13, page.ui.muted, false), 4);
+        TextView words = page.ui.text(entry.text, 16, page.ui.text, false);
+        words.setTag("vault_text_body");
+        page.ui.add(detail.body, words, 16);
+        Button close = page.ui.button(page.text.get("vault_close"));
+        close.setOnClickListener(clicked -> detail.dialog.dismiss());
+        detail.action(close);
+        Button copy = page.ui.primaryButton(page.text.get("vault_copy_text"));
+        copy.setTag("vault_copy_text");
+        copy.setOnClickListener(clicked -> {
+            if (entry.expiresAt <= Vault72h.clock.getAsLong()) {
+                detail.dialog.dismiss();
+                return;
+            }
+            ClipboardManager clipboard = page.getSystemService(ClipboardManager.class);
+            if (clipboard == null) return;
+            ClipData clip = ClipData.newPlainText(page.text.get("vault_filter_text"), entry.text);
+            PersistableBundle extras = new PersistableBundle();
+            extras.putBoolean("android.content.extra.IS_SENSITIVE", true);
+            clip.getDescription().setExtras(extras);
+            clipboard.setPrimaryClip(clip);
+            if (android.os.Build.VERSION.SDK_INT < 33) {
+                page.feedback(page.text.get("vault_text_copied"), Toast.LENGTH_SHORT);
+            }
+        });
+        detail.action(copy);
+        Runnable expire = detail.dialog::dismiss;
+        detail.dialog.setOnDismissListener(closed -> {
+            ui.removeCallbacks(expire);
+            if (mediaDialog == closed) mediaDialog = null;
+        });
+        mediaDialog = detail.dialog;
+        detail.show();
+        ui.postDelayed(expire, Math.max(0, entry.expiresAt - Vault72h.clock.getAsLong()));
     }
 
     /** Copies a kept photo or video into the phone's gallery; the copy there outlives the vault's 72 hours. */
@@ -714,7 +980,10 @@ final class VaultSheet {
             boolean cleared = Vault72h.clearAll();
             page.runOnUiThread(() -> {
                 page.feedback(page.text.get(cleared ? "vault_cleared" : "vault_clear_failed"), Toast.LENGTH_LONG);
-                if (dialog != null) load();
+                if (dialog != null) {
+                    if (cleared) resetPaging();
+                    load();
+                }
             });
         });
     }

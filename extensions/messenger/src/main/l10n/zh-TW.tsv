@@ -981,6 +981,16 @@ vault_photo	相片
 vault_video	影片
 vault_audio	音訊
 vault_audio_seek	調整音訊播放位置
+vault_filter_text	文字
+vault_filter_voice	語音訊息
+vault_more_filters	更多篩選條件
+vault_sort_newest	最新優先
+vault_sort_oldest	最舊優先
+vault_saved_at	儲存於 %1$s
+vault_recalled_at	已於 %1$s 收回
+vault_copy_text	複製
+vault_text_copied	已複製文字
+vault_text_unavailable	這段文字已無法查看。
 vault_sticker	貼圖
 vault_gif	GIF
 vault_file	檔案

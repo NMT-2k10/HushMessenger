@@ -981,6 +981,16 @@ vault_photo	Ảnh
 vault_video	Video
 vault_audio	Âm thanh
 vault_audio_seek	Tua âm thanh
+vault_filter_text	Văn bản
+vault_filter_voice	Tin thoại
+vault_more_filters	Bộ lọc khác
+vault_sort_newest	Mới nhất
+vault_sort_oldest	Cũ nhất
+vault_saved_at	Đã lưu lúc %1$s
+vault_recalled_at	Đã thu hồi lúc %1$s
+vault_copy_text	Sao chép
+vault_text_copied	Đã sao chép văn bản
+vault_text_unavailable	Văn bản này không còn trong Kho.
 vault_sticker	Nhãn dán
 vault_gif	GIF
 vault_file	Tệp

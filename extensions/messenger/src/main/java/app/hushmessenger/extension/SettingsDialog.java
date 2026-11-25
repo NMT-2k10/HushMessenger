@@ -97,6 +97,10 @@ final class SettingsDialog extends LinearLayout {
         }
     }
 
+    void addHeader(View view, int top) {
+        ui.add(header, view, top);
+    }
+
     /** Adds button as it comes: ui.button is HushGram's secondary action and ui.primaryButton its primary one. */
     void action(Button button) {
         LayoutParams params = new LayoutParams(ui.largeText ? -1 : 0, -2, ui.largeText ? 0 : 1);

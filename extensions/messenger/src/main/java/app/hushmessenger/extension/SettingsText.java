@@ -673,6 +673,16 @@ final class SettingsText {
         ENGLISH.put("message_log_save_expiring", "Save messages before they're removed");
         ENGLISH.put("message_log_save_expiring_help", "Right before the log removes a message, it's added to a text file in Download/Messenger, one file a month. That file isn't encrypted, so apps that can read your files can read it.");
         ENGLISH.put("vault_title", "Temporary Vault");
+        ENGLISH.put("vault_filter_text", "Text");
+        ENGLISH.put("vault_filter_voice", "Voice messages");
+        ENGLISH.put("vault_more_filters", "More filters");
+        ENGLISH.put("vault_sort_newest", "Newest first");
+        ENGLISH.put("vault_sort_oldest", "Oldest first");
+        ENGLISH.put("vault_saved_at", "Saved %1$s");
+        ENGLISH.put("vault_recalled_at", "Recalled %1$s");
+        ENGLISH.put("vault_copy_text", "Copy");
+        ENGLISH.put("vault_text_copied", "Text copied");
+        ENGLISH.put("vault_text_unavailable", "This text is no longer available.");
         ENGLISH.put("vault_capture_safe_mode", "Vault capture is off while Safe mode is active.");
         ENGLISH.put("vault_capture_paused", "Vault capture is paused by Pause all changes.");
         ENGLISH.put("vault_hint", "Everything here was saved on this phone when it arrived and is deleted 72 hours later. View-once messages are never saved.");

@@ -981,6 +981,16 @@ vault_photo	รูปภาพ
 vault_video	วิดีโอ
 vault_audio	เสียง
 vault_audio_seek	เลื่อนตำแหน่งการเล่นเสียง
+vault_filter_text	ข้อความ
+vault_filter_voice	ข้อความเสียง
+vault_more_filters	ตัวกรองเพิ่มเติม
+vault_sort_newest	ใหม่ที่สุดก่อน
+vault_sort_oldest	เก่าที่สุดก่อน
+vault_saved_at	บันทึกเมื่อ %1$s
+vault_recalled_at	เรียกคืนเมื่อ %1$s
+vault_copy_text	คัดลอก
+vault_text_copied	คัดลอกข้อความแล้ว
+vault_text_unavailable	ข้อความนี้ไม่สามารถเปิดได้แล้ว
 vault_sticker	สติกเกอร์
 vault_gif	GIF
 vault_file	ไฟล์

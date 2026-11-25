@@ -981,6 +981,16 @@ vault_photo	Foto
 vault_video	Vídeo
 vault_audio	Audio
 vault_audio_seek	Cambiar la posición de reproducción del audio
+vault_filter_text	Texto
+vault_filter_voice	Mensajes de voz
+vault_more_filters	Más filtros
+vault_sort_newest	Más recientes primero
+vault_sort_oldest	Más antiguos primero
+vault_saved_at	Guardado el %1$s
+vault_recalled_at	Retirado el %1$s
+vault_copy_text	Copiar
+vault_text_copied	Texto copiado
+vault_text_unavailable	Este texto ya no está disponible.
 vault_sticker	Pegatina
 vault_gif	GIF
 vault_file	Archivo

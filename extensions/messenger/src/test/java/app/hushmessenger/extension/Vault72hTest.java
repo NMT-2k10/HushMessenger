@@ -82,6 +82,93 @@ public class Vault72hTest {
         return Vault72h.entries(Vault72h.Filter.ALL, null, null, now);
     }
 
+    @Test public void recalledTextKeepsItsOriginalBodySourceAndFirstRecallTime() {
+        long row = Vault72h.recordNow("original words", "chat-1", "text-1", Vault72h.SOURCE_NOTIFICATION,
+            null, T0 - 100, 42, "An", "Team", T0);
+        capture("still active", "chat-1", "text-2", T0 + 1);
+        mediaArrival("photo-1", "chat-1", T0 + 2);
+        Vault72h.clock = () -> T0 + 20;
+        assertTrue(Vault72h.markRecalledNow("text-1"));
+        assertTrue(Vault72h.markRecalledNow("photo-1"));
+        Vault72h.clock = () -> T0 + 40;
+        assertFalse(Vault72h.markRecalledNow("text-1"));
+        assertEquals(1, Vault72h.entries(Vault72h.Filter.RECALLED_TEXT, "chat-1", "TEAM", T0 + 40).size());
+        Vault72h.Entry saved = Vault72h.currentRecalledText(context, row);
+        assertNotNull(saved);
+        assertEquals("original words", saved.text);
+        assertEquals("chat-1", saved.thread);
+        assertEquals("An", saved.sender);
+        assertEquals(42, saved.senderId);
+        assertEquals(T0, saved.receivedAt);
+        assertEquals(T0 + 20, saved.recalledAt);
+        assertTrue(Vault72h.entries(Vault72h.Filter.RECALLED_TEXT, "chat-2", null, T0 + 40).isEmpty());
+        assertEquals(1, Vault72h.entries(Vault72h.Filter.PHOTOS, null, null, T0 + 40).size());
+    }
+
+    @Test public void recallBeforeCaptureRetainsTheObservationTime() {
+        assertFalse(Vault72h.markRecalledNow("first-recall"));
+        long row = capture("arrived later", "chat-1", "first-recall", T0 + 500);
+        Vault72h.clock = () -> T0 + 600;
+        Vault72h.Entry entry = Vault72h.currentRecalledText(context, row);
+        assertNotNull(entry);
+        assertEquals(T0, entry.recalledAt);
+        assertEquals(T0 + 500, entry.receivedAt);
+    }
+
+    @Test public void anExistingVersionTwoVaultRetainsSeventeenEntriesAndItsMedia() throws Exception {
+        long legacy = capture("old recalled words", "chat-1", "legacy", T0);
+        assertTrue(Vault72h.markRecalledNow("legacy"));
+        for (int i = 0; i < 15; i++) capture("message " + i, "chat-1", "m-" + i, T0 + 1);
+        Settings.preferences.edit().putBoolean(Vault72h.KEEP_PHOTOS, true).commit();
+        byte[] image = picture();
+        VaultMedia.opener = address -> new ByteArrayInputStream(image);
+        Vault72h.recordNow(null, "chat-1", "legacy-photo", Vault72h.SOURCE_NOTIFICATION,
+            photo("legacy.png"), 0, 0, "", "", T0 + 2);
+        assertNotNull(awaitMedia(T0 + 2));
+        Vault72h.resetForTests();
+        try (android.database.sqlite.SQLiteDatabase db = android.database.sqlite.SQLiteDatabase.openDatabase(
+            context.getDatabasePath(Vault72h.DB_NAME).getAbsolutePath(), null,
+            android.database.sqlite.SQLiteDatabase.OPEN_READWRITE)) {
+            assertEquals(2, db.getVersion());
+            db.execSQL("DROP TABLE vault_recall_times");
+            db.execSQL("DROP INDEX idx_vault_received");
+        }
+        assertEquals(17, all(T0 + 3).size());
+        Vault72h.Entry recalled = Vault72h.currentRecalledText(context, legacy);
+        assertNotNull(recalled);
+        assertEquals("old recalled words", recalled.text);
+        assertEquals(0, recalled.recalledAt);
+        Vault72h.Entry media = Vault72h.entries(Vault72h.Filter.PHOTOS, null, null, T0 + 3).get(0);
+        assertArrayEquals(image, Vault72h.openMedia(context, media));
+        Vault72h.resetForTests();
+        assertEquals(17, all(T0 + 3).size());
+    }
+
+    @Test public void kindSearchAndKeysetPagingWorkWithEqualTimesInEitherOrder() {
+        for (int i = 0; i < 70; i++) {
+            capture(i % 2 == 0 ? "match " + i : "different " + i, "chat", "id-" + i, T0);
+            assertTrue(Vault72h.markRecalledNow("id-" + i));
+        }
+        mediaArrival("other-kind", "chat", T0);
+        for (Vault72h.Sort sort : Vault72h.Sort.values()) {
+            java.util.Set<Long> seen = new java.util.HashSet<>();
+            long last = sort == Vault72h.Sort.OLDEST ? 0 : Long.MAX_VALUE;
+            Vault72h.PageKey after = null;
+            for (int page = 0; page < 4; page++) {
+                List<Vault72h.Entry> entries = Vault72h.entries(Vault72h.Filter.RECALLED_TEXT, "chat", "MATCH",
+                    sort, after, 12, T0, () -> false);
+                assertEquals(page < 2 ? 12 : page == 2 ? 11 : 0, entries.size());
+                for (Vault72h.Entry entry : entries) {
+                    assertTrue(seen.add(entry.rowId));
+                    assertTrue(sort == Vault72h.Sort.OLDEST ? last < entry.rowId : last > entry.rowId);
+                    last = entry.rowId;
+                    after = new Vault72h.PageKey(entry);
+                }
+            }
+            assertEquals(35, seen.size());
+        }
+    }
+
     @Test public void aTextCaptureIsStoredSealedAndReadable() {
         long rowId = Vault72h.recordNow("xin chào, mai gặp nhé", "thread-1", "m1",
             Vault72h.SOURCE_NOTIFICATION, null, T0 - 1000, 42, "An", "Nhóm lớp", T0);
@@ -592,6 +679,60 @@ public class Vault72hTest {
             }
         }
         return false;
+    }
+
+    @Test public void theTextTabShowsRecalledPreviewAndCopiesFullTextFromItsDetail() throws Exception {
+        long now = System.currentTimeMillis();
+        String body = "Line one\nLine two\nLine three\nFull fourth line";
+        capture(body, "chat-1", "recalled-text", now);
+        capture("still active", "chat-1", "active-text", now);
+        Vault72h.clock = () -> now + 10;
+        assertTrue(Vault72h.markRecalledNow("recalled-text"));
+        try (var screen = org.robolectric.Robolectric.buildActivity(SettingsActivity.class).setup()) {
+            VaultSheet sheet = new VaultSheet(screen.get());
+            sheet.showVault();
+            try {
+                Dialog list = org.robolectric.shadows.ShadowDialog.getLatestDialog();
+                View root = list.getWindow().getDecorView();
+                Button tab = root.findViewWithTag("vault_filter_text");
+                assertNotNull(tab);
+                assertTrue(tab.performClick());
+                assertTrue(tab.isSelected());
+                Button open = awaitTaggedView(root, "vault_open_text");
+                assertFalse(hasText(root, "still active"));
+                TextView preview = root.findViewWithTag("vault_preview");
+                assertEquals(3, preview.getMaxLines());
+                assertTrue(open.performClick());
+                View detail = null;
+                for (int i = 0; i < 100 && detail == null; i++) {
+                    org.robolectric.shadows.ShadowLooper.idleMainLooper();
+                    Dialog latest = org.robolectric.shadows.ShadowDialog.getLatestDialog();
+                    if (latest != list) detail = latest.getWindow().getDecorView();
+                    else Thread.sleep(20);
+                }
+                assertNotNull(detail);
+                TextView full = detail.findViewWithTag("vault_text_body");
+                assertEquals(body, full.getText().toString());
+                Button copy = detail.findViewWithTag("vault_copy_text");
+                assertTrue(copy.performClick());
+                android.content.ClipboardManager clipboard = screen.get().getSystemService(android.content.ClipboardManager.class);
+                assertEquals(body, clipboard.getPrimaryClip().getItemAt(0).getText().toString());
+                assertTrue(clipboard.getPrimaryClip().getDescription().getExtras()
+                    .getBoolean("android.content.extra.IS_SENSITIVE"));
+            } finally {
+                sheet.destroy();
+            }
+        }
+    }
+
+    private static <T extends View> T awaitTaggedView(View root, String tag) throws InterruptedException {
+        for (int i = 0; i < 100; i++) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper();
+            T view = root.findViewWithTag(tag);
+            if (view != null) return view;
+            Thread.sleep(20);
+        }
+        throw new AssertionError("View did not render: " + tag);
     }
 
     /**
