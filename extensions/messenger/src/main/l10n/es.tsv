@@ -980,6 +980,7 @@ vault_text	Mensaje
 vault_photo	Foto
 vault_video	Vídeo
 vault_audio	Audio
+vault_audio_seek	Cambiar la posición de reproducción del audio
 vault_sticker	Pegatina
 vault_gif	GIF
 vault_file	Archivo

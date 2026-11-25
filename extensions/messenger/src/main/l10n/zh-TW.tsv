@@ -980,6 +980,7 @@ vault_text	訊息
 vault_photo	相片
 vault_video	影片
 vault_audio	音訊
+vault_audio_seek	調整音訊播放位置
 vault_sticker	貼圖
 vault_gif	GIF
 vault_file	檔案

@@ -980,6 +980,7 @@ vault_text	Mesaj
 vault_photo	Fotoğraf
 vault_video	Video
 vault_audio	Ses
+vault_audio_seek	Sesin oynatma konumunu değiştir
 vault_sticker	Çıkartma
 vault_gif	GIF
 vault_file	Dosya

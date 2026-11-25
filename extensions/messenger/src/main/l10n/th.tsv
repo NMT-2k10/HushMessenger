@@ -980,6 +980,7 @@ vault_text	ข้อความ
 vault_photo	รูปภาพ
 vault_video	วิดีโอ
 vault_audio	เสียง
+vault_audio_seek	เลื่อนตำแหน่งการเล่นเสียง
 vault_sticker	สติกเกอร์
 vault_gif	GIF
 vault_file	ไฟล์
